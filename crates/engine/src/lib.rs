@@ -1,3 +1,7 @@
+pub use nalgebra;
+pub use log;
+pub use parking_lot;
+
 #[cfg(test)]
 mod tests {
     #[test]
