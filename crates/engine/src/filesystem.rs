@@ -23,6 +23,10 @@ impl Directories {
             .map(|it| it.parent().unwrap().to_path_buf())
             .unwrap_or_else(|_| std::env::current_dir().expect("Could not get current dir"));
         let asset = exe_dir.join("asset");
+        std::fs::create_dir_all(project.config_dir()).unwrap();
+        std::fs::create_dir_all(project.data_dir()).unwrap();
+        std::fs::create_dir_all(project.data_local_dir()).unwrap();
+        std::fs::create_dir_all(&asset).unwrap();
         Directories {
             base,
             project,

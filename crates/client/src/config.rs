@@ -7,6 +7,7 @@ use serde::{Serialize, Deserialize};
 #[derive(Serialize, Deserialize, Debug, Default)]
 pub struct Config {
     pub graphics: GraphicsSettings,
+    pub log_level: String,
 }
 
 pub static CONFIG: Lazy<Config> = Lazy::new(Config::new);

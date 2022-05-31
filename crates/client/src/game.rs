@@ -2,7 +2,7 @@ use engine::uom::si::f64::Time;
 use rendering::RenderingEngine;
 
 pub struct Game <R: RenderingEngine> {
-    rendering_engine: Box<R>,
+    pub rendering_engine: Box<R>,
 }
 
 impl<R: RenderingEngine> Game<R> {
