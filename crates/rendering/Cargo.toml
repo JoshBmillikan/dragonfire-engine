@@ -16,8 +16,12 @@ itertools = "0.10.3"
 crossbeam-channel = "0.5.4"
 parking_lot = "0.12.1"
 log = "0.4.17"
+vk-mem = { version = "0.2.3", git = "https://github.com/JoshBmillikan/vk-mem-rs.git", optional = true }
+once_cell = "1.12.0"
+nalgebra = "0.31.0"
+uom = { version = "0.32.0", features = ["use_serde"] }
 
 [features]
 default = ['vulkan', 'validation-layers']
-vulkan = ['ash', 'ash-window']
-validation-layers = []
+vulkan = ['ash', 'ash-window', 'vk-mem']
+validation-layers = ['vulkan']

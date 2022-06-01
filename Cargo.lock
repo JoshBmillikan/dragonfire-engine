@@ -131,10 +131,12 @@ dependencies = [
  "fern",
  "figment",
  "log",
+ "nalgebra",
  "once_cell",
  "raw-window-handle 0.3.4",
  "rendering",
  "serde",
+ "uom",
  "winit",
 ]
 
@@ -973,10 +975,14 @@ dependencies = [
  "engine",
  "itertools",
  "log",
+ "nalgebra",
+ "once_cell",
  "parking_lot 0.12.1",
  "raw-window-handle 0.3.4",
  "serde",
  "smallvec",
+ "uom",
+ "vk-mem",
 ]
 
 [[package]]
@@ -1155,6 +1161,16 @@ name = "version_check"
 version = "0.9.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "49874b5167b65d7193b8aba1567f5c7d93d001cafc34600cee003eda787e483f"
+
+[[package]]
+name = "vk-mem"
+version = "0.2.3"
+source = "git+https://github.com/JoshBmillikan/vk-mem-rs.git#f51d48a3ea5f464ebfe124ede79646e20cf543fb"
+dependencies = [
+ "ash",
+ "bitflags",
+ "cc",
+]
 
 [[package]]
 name = "wasi"

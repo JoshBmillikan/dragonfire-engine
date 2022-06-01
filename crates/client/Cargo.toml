@@ -16,3 +16,5 @@ figment = { version = "0.10.6", features = ["env", "toml"]}
 fern = { version = "0.6.1", features = ['colored'] }
 chrono = "0.4.19"
 log = "0.4.17"
+uom = { version = "0.32.0", features = ["use_serde"] }
+nalgebra = "0.31.0"

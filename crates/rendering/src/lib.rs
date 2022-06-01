@@ -1,16 +1,26 @@
+use std::sync::Arc;
+use nalgebra::{Matrix4, Perspective3, Transform3};
 use raw_window_handle::HasRawWindowHandle;
-use engine::uom::si::f32::Angle;
+use uom::si::f32::Angle;
 use serde::{Serialize, Deserialize};
-use engine::uom::si::angle::degree;
-use engine::nalgebra;
+use uom::si::angle::degree;
 
+
+#[cfg(feature = "vulkan")]
 mod vulkan {
     pub mod engine;
+    pub(super) mod mesh;
+    pub(super) mod material;
 }
 
+#[cfg(feature = "vulkan")]
+type Material = vulkan::material::Material;
+#[cfg(feature = "vulkan")]
+type Mesh = vulkan::mesh::Mesh;
+
 pub trait RenderingEngine {
-    fn begin_rendering(&mut self, view: &nalgebra::Transform3<f32>, projection: &nalgebra::Projective3<f32>);
-    fn render(&mut self);
+    fn begin_rendering(&mut self, view: &nalgebra::Transform3<f32>, projection: &nalgebra::Perspective3<f32>);
+    fn render(&mut self, mesh: &Arc<Mesh>,material: &Arc<Material>, transform: &nalgebra::Transform3<f32>);
     fn end_rendering(&mut self);
     fn resize(&mut self, width: u32, height: u32);
 }
@@ -35,4 +45,9 @@ impl Default for GraphicsSettings {
             fov: Angle::new::<degree>(45.)
         }
     }
+}
+
+fn cull_test(mesh: &Mesh, model: &Matrix4<f32>, view: &Transform3<f32>, projection: &Perspective3<f32>) -> bool {
+    // todo
+    true
 }

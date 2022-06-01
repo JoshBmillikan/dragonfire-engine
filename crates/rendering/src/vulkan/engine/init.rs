@@ -1,7 +1,8 @@
 use std::error::Error;
 use std::ffi::{CStr, CString};
+use std::mem::ManuallyDrop;
 use std::num::NonZeroUsize;
-use std::sync::Arc;
+use std::sync::{Arc, Barrier};
 
 use ash::prelude::VkResult;
 use ash::vk;
@@ -12,7 +13,8 @@ use raw_window_handle::HasRawWindowHandle;
 use smallvec::SmallVec;
 
 use crate::GraphicsSettings;
-use crate::vulkan::engine::{debug_callback, Engine, Frame, FRAMES_IN_FLIGHT, render_thread};
+use crate::vulkan::engine::{debug_callback, Engine, Frame, FRAMES_IN_FLIGHT, presentation_thread, render_thread};
+use crate::vulkan::engine::alloc::create_allocator;
 
 impl Engine {
     /// Creates the vulkan rendering engine using a window handle and the graphics settings
@@ -33,12 +35,14 @@ impl Engine {
         let extensions = vec![
             ash::extensions::khr::Swapchain::name(),
             ash::extensions::khr::DynamicRendering::name(),
+            vk::ExtMemoryBudgetFn::name()
         ];
         let physical_device =
             get_physical_device(&instance, surface, &surface_loader, &extensions)?;
         let queue_families =
             get_queue_families(&instance, physical_device, surface, &surface_loader)?;
         let device = create_device(&instance, physical_device, &extensions, &queue_families)?;
+        create_allocator(&entry, &instance, physical_device, &device)?;
         let graphics_queue = device.get_device_queue(queue_families[0], 0);
         let presentation_queue = device.get_device_queue(queue_families[1], 0);
         let surface_format = get_surface_format(physical_device, surface, &surface_loader)?;
@@ -54,20 +58,29 @@ impl Engine {
             settings,
         )?;
         let swapchain_images = swapchain_loader.get_swapchain_images(swapchain)?;
+        info!("Using {} swapchain images", swapchain_images.len());
         let swapchain_views =
             create_swapchain_views(&swapchain_images, &device, surface_format.format)?;
 
-        let thread_count = (std::thread::available_parallelism().map(NonZeroUsize::get).unwrap_or_default() / 2).min(1);
+        let thread_count = (std::thread::available_parallelism().map(NonZeroUsize::get).unwrap_or_default() / 2).max(1);
         info!("Using {thread_count} render threads");
         let frames = (0..FRAMES_IN_FLIGHT)
             .map(|_| create_frame(&device, queue_families[0], thread_count))
             .collect::<Result<SmallVec<[_; FRAMES_IN_FLIGHT]>, Box<dyn Error>>>()?;
 
+        let render_barrier = Arc::new(Barrier::new(thread_count + 1));
         let (render_channels, render_thread_handles) = (0..thread_count).map(|_| {
             let (sender, receiver) = crossbeam_channel::bounded(16);
             let device = device.clone();
-            (sender, std::thread::spawn(move || render_thread(receiver, &device)))
+            let render_barrier = render_barrier.clone();
+            (sender, std::thread::spawn(move || render_thread(receiver, &device, &render_barrier)))
         }).unzip();
+
+        let (present_channel, present_thread_handle) = {
+            let (sender, receiver) = crossbeam_channel::bounded(16);
+            let device = device.clone();
+            (sender, std::thread::spawn(move || presentation_thread(receiver, &device, graphics_queue, presentation_queue)))
+        };
 
         info!("Rendering engine initialization finished");
         Ok(Engine {
@@ -90,6 +103,12 @@ impl Engine {
             frames: frames.into_inner().unwrap(),
             render_channels,
             render_thread_handles,
+            render_barrier,
+            present_channel: ManuallyDrop::new(present_channel),
+            present_thread_handle: ManuallyDrop::new(present_thread_handle),
+            last_mesh: std::ptr::null(),
+            last_material: std::ptr::null(),
+            current_thread: 0
         })
     }
 }
@@ -310,7 +329,7 @@ unsafe fn create_device(
                 .queue_priorities(&queue_priority)
                 .build()
         })
-        .collect::<Vec<_>>();
+        .collect::<SmallVec<[_; 2]>>();
 
     for ext in &extensions {
         info!("Loaded device extension {:?}", CStr::from_ptr(*ext));
