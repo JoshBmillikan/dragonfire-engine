@@ -1,8 +1,11 @@
 use std::ffi::{CStr, CString};
+use std::sync::Arc;
+use std::thread::JoinHandle;
 
 use ash::vk;
-
-use engine::log::Level;
+use crossbeam_channel::{Receiver, Sender};
+use log::{error, Level, log};
+use smallvec::SmallVec;
 
 use crate::nalgebra::{Projective3, Transform3};
 use crate::RenderingEngine;
@@ -14,7 +17,7 @@ pub struct Engine {
     frame_count: u64,
     entry: Box<ash::Entry>,
     instance: Box<ash::Instance>,
-    device: Box<ash::Device>,
+    device: Arc<ash::Device>,
     surface_loader: Box<ash::extensions::khr::Surface>,
     #[cfg(feature = "validation-layers")]
     debug_messenger: (
@@ -31,10 +34,22 @@ pub struct Engine {
     swapchain_images: Vec<vk::Image>,
     swapchain_views: Vec<vk::ImageView>,
     frames: [Frame; FRAMES_IN_FLIGHT],
+    render_channels: SmallVec<[Sender<RenderCommand>; 12]>,
+    render_thread_handles: SmallVec<[JoinHandle<()>;12]>,
 }
 
 #[derive(Debug)]
 struct Frame {
+    primary_buffer: vk::CommandBuffer,
+    primary_pool: vk::CommandPool,
+    secondary_buffers: SmallVec<[vk::CommandBuffer; 12]>,
+    secondary_pools: SmallVec<[vk::CommandPool; 12]>,
+    fence: vk::Fence,
+    graphics_semaphore: vk::Semaphore,
+    present_semaphore: vk::Semaphore
+}
+
+enum RenderCommand {
 
 }
 
@@ -59,9 +74,32 @@ impl RenderingEngine for Engine {
     }
 }
 
+fn render_thread(receiver: Receiver<RenderCommand>, device: &ash::Device) {
+
+}
+
 impl Drop for Engine {
     fn drop(&mut self) {
         unsafe {
+            self.device.device_wait_idle().unwrap();
+            
+            self.render_channels.clear();
+            while let Some(handle) = self.render_thread_handles.pop() {
+                if let Err(e) = handle.join() {
+                    error!("Error in rendering thread {e:?}");
+                }
+            }
+            
+            for frame in &self.frames {
+                self.device.destroy_command_pool(frame.primary_pool, None);
+                for pool in &frame.secondary_pools {
+                    self.device.destroy_command_pool(*pool, None);
+                }
+                self.device.destroy_semaphore(frame.graphics_semaphore, None);
+                self.device.destroy_semaphore(frame.present_semaphore, None);
+                self.device.destroy_fence(frame.fence, None);
+            }
+
             for view in &self.swapchain_views {
                 self.device.destroy_image_view(*view, None);
             }
@@ -95,7 +133,7 @@ unsafe extern "system" fn debug_callback(
         Flags::VERBOSE => Level::Trace,
         _ => Level::Debug,
     };
-    engine::log::log!(target: "Validation Layers", severity, "[{:?}] {}: {}",
+    log!(target: "Validation Layers", severity, "[{:?}] {}: {}",
         message_types,
         CStr::from_ptr((*p_callback_data).p_message_id_name).to_string_lossy(),
         CStr::from_ptr((*p_callback_data).p_message).to_string_lossy());

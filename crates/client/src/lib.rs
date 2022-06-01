@@ -2,13 +2,13 @@ use std::error::Error;
 use std::time::Instant;
 
 use fern::colors::{Color, ColoredLevelConfig};
+use log::{info, LevelFilter};
 use winit::dpi::LogicalSize;
 use winit::event::{Event, WindowEvent};
 use winit::event_loop::{ControlFlow, EventLoop};
 use winit::window::{Window, WindowBuilder};
 
 use engine::filesystem::DIRS;
-use engine::log::{info, LevelFilter};
 use engine::uom::si::f64::Time;
 use engine::uom::si::time::second;
 use rendering::{create_rendering_engine, RenderingEngine};

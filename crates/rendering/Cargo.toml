@@ -13,6 +13,9 @@ raw-window-handle = "0.3.4"
 serde = { version = "1.0.137", features = ["derive"] }
 smallvec = { version = "1.8.0", features = ["union", "serde", "const_generics", "const_new", "write"] }
 itertools = "0.10.3"
+crossbeam-channel = "0.5.4"
+parking_lot = "0.12.1"
+log = "0.4.17"
 
 [features]
 default = ['vulkan', 'validation-layers']

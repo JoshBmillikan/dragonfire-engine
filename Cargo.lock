@@ -130,6 +130,7 @@ dependencies = [
  "engine",
  "fern",
  "figment",
+ "log",
  "once_cell",
  "raw-window-handle 0.3.4",
  "rendering",
@@ -262,6 +263,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "crossbeam-channel"
+version = "0.5.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5aaa7bd5fb665c6864b5f963dd9097905c54125909c7aa94c9e18507cdbe6c53"
+dependencies = [
+ "cfg-if 1.0.0",
+ "crossbeam-utils",
+]
+
+[[package]]
+name = "crossbeam-utils"
+version = "0.8.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0bf124c720b7686e3c2663cf54062ab0f68a88af2fb6a030e87e30bf721fcb38"
+dependencies = [
+ "cfg-if 1.0.0",
+ "lazy_static",
+]
+
+[[package]]
 name = "cty"
 version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -357,7 +378,7 @@ dependencies = [
  "log",
  "nalgebra",
  "once_cell",
- "parking_lot 0.12.0",
+ "parking_lot 0.12.1",
  "serde",
  "smallvec",
  "uom",
@@ -768,9 +789,9 @@ dependencies = [
 
 [[package]]
 name = "parking_lot"
-version = "0.12.0"
+version = "0.12.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "87f5ec2493a61ac0506c0f4199f99070cbe83857b0337006a30f3e6719b8ef58"
+checksum = "3742b2c103b9f06bc9fff0a37ff4912935851bee6d36f3c02bcc755bcfec228f"
 dependencies = [
  "lock_api",
  "parking_lot_core 0.9.3",
@@ -948,8 +969,11 @@ version = "0.1.0"
 dependencies = [
  "ash",
  "ash-window",
+ "crossbeam-channel",
  "engine",
  "itertools",
+ "log",
+ "parking_lot 0.12.1",
  "raw-window-handle 0.3.4",
  "serde",
  "smallvec",
