@@ -9,8 +9,8 @@ use winit::event_loop::{ControlFlow, EventLoop};
 use winit::window::{Window, WindowBuilder};
 
 use engine::filesystem::DIRS;
-use engine::uom::si::f64::Time;
-use engine::uom::si::time::second;
+use uom::si::f64::Time;
+use uom::si::time::second;
 use rendering::{create_rendering_engine, RenderingEngine};
 
 use crate::config::CONFIG;

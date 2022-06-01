@@ -1,4 +1,4 @@
-use engine::uom::si::f64::Time;
+use uom::si::f64::Time;
 use rendering::RenderingEngine;
 
 pub struct Game <R: RenderingEngine> {

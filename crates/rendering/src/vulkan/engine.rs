@@ -126,6 +126,7 @@ fn render_thread(receiver: Receiver<RenderCommand>, device: &ash::Device, barrie
                 view = view_matrix;
                 projection = proj;
             }
+
             RenderCommand::Render(mesh, material, transform) => {
                 debug_assert_ne!(cmd, vk::CommandBuffer::null());
                 if !cull_test(&mesh, &transform, &view, &projection) {
@@ -155,6 +156,7 @@ fn render_thread(receiver: Receiver<RenderCommand>, device: &ash::Device, barrie
                     device.cmd_draw_indexed(cmd, mesh.indices.len() as u32, 1, 0, 0, 0);
                 }
             }
+
             RenderCommand::End => {
                 last_mesh = std::ptr::null();
                 last_material = std::ptr::null();
