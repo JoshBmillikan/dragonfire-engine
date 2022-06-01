@@ -47,7 +47,7 @@ impl Engine {
         let presentation_queue = device.get_device_queue(queue_families[1], 0);
         let surface_format = get_surface_format(physical_device, surface, &surface_loader)?;
 
-        let swapchain_loader = Box::new(ash::extensions::khr::Swapchain::new(&instance, &device));
+        let swapchain_loader = Arc::new(ash::extensions::khr::Swapchain::new(&instance, &device));
         let (swapchain, swapchain_extent) = create_swapchain(
             &swapchain_loader,
             physical_device,
@@ -77,7 +77,7 @@ impl Engine {
         }).unzip();
 
         let (present_channel, present_thread_handle) = {
-            let (sender, receiver) = crossbeam_channel::bounded(16);
+            let (sender, receiver) = crossbeam_channel::bounded(4);
             let device = device.clone();
             (sender, std::thread::spawn(move || presentation_thread(receiver, &device, graphics_queue, presentation_queue)))
         };
@@ -108,7 +108,8 @@ impl Engine {
             present_thread_handle: ManuallyDrop::new(present_thread_handle),
             last_mesh: std::ptr::null(),
             last_material: std::ptr::null(),
-            current_thread: 0
+            current_thread: 0,
+            current_image_index: 0
         })
     }
 }

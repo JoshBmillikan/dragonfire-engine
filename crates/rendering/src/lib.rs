@@ -47,7 +47,7 @@ impl Default for GraphicsSettings {
     }
 }
 
-fn cull_test(mesh: &Mesh, model: &Matrix4<f32>, view: &Transform3<f32>, projection: &Perspective3<f32>) -> bool {
+fn cull_test(mesh: &Mesh, model: &Matrix4<f32>, view: &Matrix4<f32>, projection: &Perspective3<f32>) -> bool {
     // todo
     true
 }

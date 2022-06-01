@@ -32,7 +32,7 @@ pub struct Engine {
     presentation_queue: vk::Queue,
     surface_format: vk::SurfaceFormatKHR,
     swapchain: vk::SwapchainKHR,
-    swapchain_loader: Box<ash::extensions::khr::Swapchain>,
+    swapchain_loader: Arc<ash::extensions::khr::Swapchain>,
     swapchain_extent: vk::Extent2D,
     swapchain_images: Vec<vk::Image>,
     swapchain_views: Vec<vk::ImageView>,
@@ -40,11 +40,12 @@ pub struct Engine {
     render_channels: SmallVec<[Sender<RenderCommand>; 12]>,
     render_thread_handles: SmallVec<[JoinHandle<()>; 12]>,
     render_barrier: Arc<Barrier>,
-    present_channel: ManuallyDrop<Sender<()>>,
+    present_channel: ManuallyDrop<Sender<PresentData>>,
     present_thread_handle: ManuallyDrop<JoinHandle<()>>,
     last_mesh: *const Mesh,
     last_material: *const Material,
     current_thread: usize,
+    current_image_index: u32,
 }
 
 #[derive(Debug)]
@@ -59,15 +60,73 @@ struct Frame {
 }
 
 enum RenderCommand {
-    Begin(vk::CommandBuffer, Transform3<f32>, Perspective3<f32>),
+    Begin(vk::CommandBuffer, Matrix4<f32>, Perspective3<f32>),
     Render(Arc<Mesh>, Arc<Material>, Matrix4<f32>),
     End,
 }
 
+struct PresentData {
+    render_semaphore: vk::Semaphore,
+    present_semaphore: vk::Semaphore,
+    cmd: vk::CommandBuffer,
+    swapchain: vk::SwapchainKHR,
+    swapchain_loader: Arc<ash::extensions::khr::Swapchain>,
+    image_index: u32,
+}
+
 impl RenderingEngine for Engine {
     fn begin_rendering(&mut self, view: &Transform3<f32>, projection: &Perspective3<f32>) {
-        let frame = self.get_frame();
-        todo!()
+        let frame = &self.frames[self.frame_count as usize % FRAMES_IN_FLIGHT];
+        let fences = [frame.fence];
+        unsafe {
+            if let Err(err) = self.device.wait_for_fences(&fences, true, u64::MAX) {
+                error!("Error waiting on fence: {err}");
+            }
+            let (index, _ok) = self
+                .swapchain_loader
+                .acquire_next_image(
+                    self.swapchain,
+                    u64::MAX,
+                    frame.present_semaphore,
+                    vk::Fence::null(),
+                )
+                .expect("Failed to acquire swapchain image");
+            self.current_image_index = index;
+            // todo ubo data
+            self.device.reset_command_pool(frame.primary_pool, vk::CommandPoolResetFlags::empty()).unwrap();
+            for pool in &frame.secondary_pools {
+                self.device.reset_command_pool(*pool, vk::CommandPoolResetFlags::empty()).unwrap();
+            }
+            let begin_info = vk::CommandBufferBeginInfo::builder().flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
+            self.device.begin_command_buffer(frame.primary_buffer, &begin_info).unwrap();
+
+            for buf in &frame.secondary_buffers {
+                let colors = [self.surface_format.format];
+                let mut rendering_info = vk::CommandBufferInheritanceRenderingInfo::builder()
+                    .color_attachment_formats(&colors);
+                let inheritance_info = vk::CommandBufferInheritanceInfo::builder()
+                    .push_next(&mut rendering_info);
+                let begin_info = vk::CommandBufferBeginInfo::builder()
+                    .inheritance_info(&inheritance_info)
+                    .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT | vk::CommandBufferUsageFlags::RENDER_PASS_CONTINUE);
+                self.device.begin_command_buffer(*buf, &begin_info).unwrap();
+            }
+
+            let rendering_info = vk::RenderingInfo::builder()
+                .flags(vk::RenderingFlagsKHR::CONTENTS_SECONDARY_COMMAND_BUFFERS)
+                .render_area(vk::Rect2D {
+                    offset: Default::default(),
+                    extent: self.swapchain_extent
+                });
+            self.device.cmd_begin_rendering(frame.primary_buffer, &rendering_info);
+            for (index, channel) in self.render_channels.iter().enumerate() {
+                channel.send(RenderCommand::Begin(
+                    frame.secondary_buffers[index],
+                    view.to_homogeneous(),
+                    *projection
+                )).unwrap();
+            }
+        }
     }
 
     fn render(&mut self, mesh: &Arc<Mesh>, material: &Arc<Material>, transform: &Transform3<f32>) {
@@ -92,7 +151,31 @@ impl RenderingEngine for Engine {
         for channel in &self.render_channels {
             channel.send(RenderCommand::End).unwrap();
         }
-        todo!()
+        self.render_barrier.wait();
+        let frame = &self.frames[self.frame_count as usize % FRAMES_IN_FLIGHT];
+
+        unsafe {
+            for buffer in &frame.secondary_buffers {
+                self.device.end_command_buffer(*buffer).unwrap();
+            }
+            self.device
+                .cmd_execute_commands(frame.primary_buffer, &frame.secondary_buffers);
+            self.device.cmd_end_rendering(frame.primary_buffer);
+            self.device
+                .end_command_buffer(frame.primary_buffer)
+                .unwrap();
+        }
+
+        self.present_channel
+            .send(PresentData {
+                render_semaphore: frame.graphics_semaphore,
+                present_semaphore: frame.present_semaphore,
+                cmd: frame.primary_buffer,
+                swapchain: self.swapchain,
+                swapchain_loader: self.swapchain_loader.clone(),
+                image_index: self.current_image_index,
+            })
+            .unwrap();
     }
 
     fn resize(&mut self, width: u32, height: u32) {
@@ -103,13 +186,6 @@ impl RenderingEngine for Engine {
             self.device.device_wait_idle().unwrap();
             todo!()
         }
-    }
-}
-
-impl Engine {
-    #[inline]
-    fn get_frame(&self) -> &Frame {
-        &self.frames[self.frame_count as usize % FRAMES_IN_FLIGHT]
     }
 }
 
@@ -168,12 +244,36 @@ fn render_thread(receiver: Receiver<RenderCommand>, device: &ash::Device, barrie
 }
 
 fn presentation_thread(
-    receiver: Receiver<()>,
+    receiver: Receiver<PresentData>,
     device: &ash::Device,
     graphics_queue: vk::Queue,
     presentation_queue: vk::Queue,
 ) {
-    while let Ok(data) = receiver.recv() {}
+    while let Ok(data) = receiver.recv() {
+        let submit_info = [vk::SubmitInfo::builder()
+            .command_buffers(&[data.cmd])
+            .wait_semaphores(&[data.present_semaphore])
+            .signal_semaphores(&[data.render_semaphore])
+            .wait_dst_stage_mask(&[vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT])
+            .build()];
+
+        let wait_semaphore = [data.render_semaphore];
+        let swapchain = [data.swapchain];
+        let image_index = [data.image_index];
+        let present_info = vk::PresentInfoKHR::builder()
+            .wait_semaphores(&wait_semaphore)
+            .swapchains(&swapchain)
+            .image_indices(&image_index);
+
+        unsafe {
+            device
+                .queue_submit(graphics_queue, &submit_info, vk::Fence::null())
+                .expect("Queue submit failed");
+            data.swapchain_loader
+                .queue_present(presentation_queue, &present_info)
+                .expect("Queue presentation failed");
+        }
+    }
 }
 
 impl Drop for Engine {
