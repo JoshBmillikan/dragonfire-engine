@@ -85,7 +85,7 @@ impl Engine {
         info!("Rendering engine initialization finished");
         Ok(Engine {
             frame_count: 0,
-            entry,
+            _entry: entry,
             instance,
             device,
             surface_loader,
@@ -164,11 +164,13 @@ unsafe fn create_instance(
         })
         .collect::<Vec<_>>();
 
+    let app_name = CString::new(std::option_env!("APP_NAME").unwrap_or("test")).unwrap();
     let app_info = vk::ApplicationInfo::builder()
         .engine_name(engine_name.as_c_str())
         .api_version(vk::API_VERSION_1_3)
         .engine_version(version)
-        .application_version(version);
+        .application_version(version)
+        .application_name(app_name.as_c_str());
 
     let create_info = vk::InstanceCreateInfo::builder()
         .application_info(&app_info)

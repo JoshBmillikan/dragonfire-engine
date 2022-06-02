@@ -28,7 +28,6 @@ pub trait RenderingEngine {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct GraphicsSettings {
     pub resolution: [u32; 2],
-    pub title: String,
     pub fov: Angle,
 }
 
@@ -41,7 +40,6 @@ impl Default for GraphicsSettings {
     fn default() -> Self {
         GraphicsSettings {
             resolution: [1920, 1080],
-            title: "Dragonfire Engine".to_string(),
             fov: Angle::new::<degree>(45.)
         }
     }

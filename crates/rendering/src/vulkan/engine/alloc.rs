@@ -1,4 +1,6 @@
 use std::error::Error;
+use std::marker::PhantomData;
+use std::ops::{Deref, DerefMut};
 use ash::prelude::VkResult;
 use ash::vk;
 use log::warn;
@@ -50,7 +52,7 @@ pub struct Buffer {
 }
 
 impl Buffer {
-    pub fn new() -> Result<Buffer, Box<dyn Error>> {
+    pub unsafe fn new() -> Result<Buffer, Box<dyn Error>> {
         todo!()
     }
 }
@@ -60,5 +62,24 @@ impl Drop for Buffer {
         unsafe {
             ALLOCATOR.get().expect("Allocator not initialized").destroy_buffer(self.buffer, self.allocation);
         }
+    }
+}
+
+pub struct GpuObject<T: Sized> {
+    buffer: Buffer,
+    _spooky: PhantomData<T>
+}
+
+impl<T> Deref for GpuObject<T> {
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        unsafe {&*(self.buffer.info.get_mapped_data() as *const T)}
+    }
+}
+
+impl<T> DerefMut for GpuObject<T> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        unsafe {&mut *(self.buffer.info.get_mapped_data() as *mut T)}
     }
 }

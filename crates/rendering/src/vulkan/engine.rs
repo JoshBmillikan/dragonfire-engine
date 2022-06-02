@@ -14,11 +14,12 @@ use crate::{cull_test, Material, Mesh, RenderingEngine};
 
 mod alloc;
 mod init;
+mod pipeline;
 
 const FRAMES_IN_FLIGHT: usize = 2;
 pub struct Engine {
     frame_count: u64,
-    entry: Box<ash::Entry>,
+    _entry: Box<ash::Entry>,
     instance: Box<ash::Instance>,
     device: Arc<ash::Device>,
     surface_loader: Box<ash::extensions::khr::Surface>,
@@ -93,22 +94,32 @@ impl RenderingEngine for Engine {
                 .expect("Failed to acquire swapchain image");
             self.current_image_index = index;
             // todo ubo data
-            self.device.reset_command_pool(frame.primary_pool, vk::CommandPoolResetFlags::empty()).unwrap();
+            self.device
+                .reset_command_pool(frame.primary_pool, vk::CommandPoolResetFlags::empty())
+                .unwrap();
             for pool in &frame.secondary_pools {
-                self.device.reset_command_pool(*pool, vk::CommandPoolResetFlags::empty()).unwrap();
+                self.device
+                    .reset_command_pool(*pool, vk::CommandPoolResetFlags::empty())
+                    .unwrap();
             }
-            let begin_info = vk::CommandBufferBeginInfo::builder().flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
-            self.device.begin_command_buffer(frame.primary_buffer, &begin_info).unwrap();
+            let begin_info = vk::CommandBufferBeginInfo::builder()
+                .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
+            self.device
+                .begin_command_buffer(frame.primary_buffer, &begin_info)
+                .unwrap();
 
             for buf in &frame.secondary_buffers {
                 let colors = [self.surface_format.format];
                 let mut rendering_info = vk::CommandBufferInheritanceRenderingInfo::builder()
                     .color_attachment_formats(&colors);
-                let inheritance_info = vk::CommandBufferInheritanceInfo::builder()
-                    .push_next(&mut rendering_info);
+                let inheritance_info =
+                    vk::CommandBufferInheritanceInfo::builder().push_next(&mut rendering_info);
                 let begin_info = vk::CommandBufferBeginInfo::builder()
                     .inheritance_info(&inheritance_info)
-                    .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT | vk::CommandBufferUsageFlags::RENDER_PASS_CONTINUE);
+                    .flags(
+                        vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT
+                            | vk::CommandBufferUsageFlags::RENDER_PASS_CONTINUE,
+                    );
                 self.device.begin_command_buffer(*buf, &begin_info).unwrap();
             }
 
@@ -116,15 +127,18 @@ impl RenderingEngine for Engine {
                 .flags(vk::RenderingFlagsKHR::CONTENTS_SECONDARY_COMMAND_BUFFERS)
                 .render_area(vk::Rect2D {
                     offset: Default::default(),
-                    extent: self.swapchain_extent
+                    extent: self.swapchain_extent,
                 });
-            self.device.cmd_begin_rendering(frame.primary_buffer, &rendering_info);
+            self.device
+                .cmd_begin_rendering(frame.primary_buffer, &rendering_info);
             for (index, channel) in self.render_channels.iter().enumerate() {
-                channel.send(RenderCommand::Begin(
-                    frame.secondary_buffers[index],
-                    view.to_homogeneous(),
-                    *projection
-                )).unwrap();
+                channel
+                    .send(RenderCommand::Begin(
+                        frame.secondary_buffers[index],
+                        view.to_homogeneous(),
+                        *projection,
+                    ))
+                    .unwrap();
             }
         }
     }

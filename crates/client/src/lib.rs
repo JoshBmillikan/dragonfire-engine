@@ -3,14 +3,14 @@ use std::time::Instant;
 
 use fern::colors::{Color, ColoredLevelConfig};
 use log::{info, LevelFilter};
+use uom::si::f64::Time;
+use uom::si::time::second;
 use winit::dpi::LogicalSize;
 use winit::event::{Event, WindowEvent};
 use winit::event_loop::{ControlFlow, EventLoop};
 use winit::window::{Window, WindowBuilder};
 
 use engine::filesystem::DIRS;
-use uom::si::f64::Time;
-use uom::si::time::second;
 use rendering::{create_rendering_engine, RenderingEngine};
 
 use crate::config::CONFIG;
@@ -64,7 +64,7 @@ fn create_window(events: &EventLoop<()>) -> Result<Window, Box<dyn Error>> {
             width: settings.resolution[0],
             height: settings.resolution[1],
         })
-        .with_title(&settings.title)
+        .with_title(std::option_env!("APP_NAME").unwrap_or("dragonfire engine"))
         .build(events)?)
     // todo more window options
 }
