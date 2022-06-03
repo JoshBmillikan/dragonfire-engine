@@ -3,10 +3,11 @@ use std::ffi::{CStr, CString};
 use std::mem::ManuallyDrop;
 use std::num::NonZeroUsize;
 use std::sync::{Arc, Barrier};
+use std::thread::{available_parallelism, spawn};
 
 use ash::prelude::VkResult;
 use ash::vk;
-use ash::vk::{PhysicalDevice, PhysicalDeviceType};
+use ash::vk::PhysicalDeviceType;
 use itertools::Itertools;
 use log::{info, warn};
 use raw_window_handle::HasRawWindowHandle;
@@ -14,7 +15,7 @@ use smallvec::SmallVec;
 
 use crate::GraphicsSettings;
 use crate::vulkan::engine::{debug_callback, Engine, Frame, FRAMES_IN_FLIGHT, presentation_thread, render_thread};
-use crate::vulkan::engine::alloc::create_allocator;
+use crate::vulkan::engine::alloc::{create_allocator, GpuObject};
 
 impl Engine {
     /// Creates the vulkan rendering engine using a window handle and the graphics settings
@@ -62,7 +63,7 @@ impl Engine {
         let swapchain_views =
             create_swapchain_views(&swapchain_images, &device, surface_format.format)?;
 
-        let thread_count = (std::thread::available_parallelism().map(NonZeroUsize::get).unwrap_or_default() / 2).max(1);
+        let thread_count = 1.max(available_parallelism().map(NonZeroUsize::get).unwrap_or_default() / 2);
         info!("Using {thread_count} render threads");
         let frames = (0..FRAMES_IN_FLIGHT)
             .map(|_| create_frame(&device, queue_families[0], thread_count))
@@ -73,13 +74,13 @@ impl Engine {
             let (sender, receiver) = crossbeam_channel::bounded(16);
             let device = device.clone();
             let render_barrier = render_barrier.clone();
-            (sender, std::thread::spawn(move || render_thread(receiver, &device, &render_barrier)))
+            (sender, spawn(move || render_thread(receiver, &device, &render_barrier)))
         }).unzip();
 
         let (present_channel, present_thread_handle) = {
             let (sender, receiver) = crossbeam_channel::bounded(4);
             let device = device.clone();
-            (sender, std::thread::spawn(move || presentation_thread(receiver, &device, graphics_queue, presentation_queue)))
+            (sender, spawn(move || presentation_thread(receiver, &device, graphics_queue, presentation_queue)))
         };
 
         info!("Rendering engine initialization finished");
@@ -500,6 +501,8 @@ unsafe fn create_frame(
     let graphics_semaphore = device.create_semaphore(&Default::default(), None)?;
     let present_semaphore = device.create_semaphore(&Default::default(), None)?;
 
+    let ubo = GpuObject::new(vk::BufferUsageFlags::UNIFORM_BUFFER)?;
+
     Ok(Frame {
         primary_buffer,
         primary_pool,
@@ -507,7 +510,8 @@ unsafe fn create_frame(
         secondary_pools,
         fence,
         graphics_semaphore,
-        present_semaphore
+        present_semaphore,
+        ubo: ManuallyDrop::new(ubo)
     })
 }
 

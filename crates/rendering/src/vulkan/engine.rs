@@ -9,10 +9,10 @@ use log::{error, log, Level};
 use nalgebra::{Matrix4, Perspective3, Projective3, Transform3};
 use smallvec::SmallVec;
 
-use crate::vulkan::engine::alloc::destroy_allocator;
+use crate::vulkan::engine::alloc::{destroy_allocator, GpuObject};
 use crate::{cull_test, Material, Mesh, RenderingEngine};
 
-mod alloc;
+pub(crate) mod alloc;
 mod init;
 mod pipeline;
 
@@ -58,6 +58,13 @@ struct Frame {
     fence: vk::Fence,
     graphics_semaphore: vk::Semaphore,
     present_semaphore: vk::Semaphore,
+    ubo: ManuallyDrop<GpuObject<UBO>>
+}
+
+#[derive(Debug)]
+struct UBO {
+    view: nalgebra::Matrix4<f32>,
+    projection: nalgebra::Matrix4<f32>,
 }
 
 enum RenderCommand {
@@ -77,7 +84,7 @@ struct PresentData {
 
 impl RenderingEngine for Engine {
     fn begin_rendering(&mut self, view: &Transform3<f32>, projection: &Perspective3<f32>) {
-        let frame = &self.frames[self.frame_count as usize % FRAMES_IN_FLIGHT];
+        let frame = &mut self.frames[self.frame_count as usize % FRAMES_IN_FLIGHT];
         let fences = [frame.fence];
         unsafe {
             if let Err(err) = self.device.wait_for_fences(&fences, true, u64::MAX) {
@@ -93,7 +100,8 @@ impl RenderingEngine for Engine {
                 )
                 .expect("Failed to acquire swapchain image");
             self.current_image_index = index;
-            // todo ubo data
+            frame.ubo.view = view.to_homogeneous();
+            frame.ubo.projection = projection.to_homogeneous();
             self.device
                 .reset_command_pool(frame.primary_pool, vk::CommandPoolResetFlags::empty())
                 .unwrap();
@@ -243,7 +251,7 @@ fn render_thread(receiver: Receiver<RenderCommand>, device: &ash::Device, barrie
                         ),
                     );
 
-                    device.cmd_draw_indexed(cmd, mesh.indices.len() as u32, 1, 0, 0, 0);
+                    device.cmd_draw_indexed(cmd, mesh.get_index_count(), 1, 0, 0, 0);
                 }
             }
 
@@ -308,7 +316,7 @@ impl Drop for Engine {
                 }
             }
 
-            for frame in &self.frames {
+            for frame in &mut self.frames {
                 self.device.destroy_command_pool(frame.primary_pool, None);
                 for pool in &frame.secondary_pools {
                     self.device.destroy_command_pool(*pool, None);
@@ -317,6 +325,7 @@ impl Drop for Engine {
                     .destroy_semaphore(frame.graphics_semaphore, None);
                 self.device.destroy_semaphore(frame.present_semaphore, None);
                 self.device.destroy_fence(frame.fence, None);
+                ManuallyDrop::drop(&mut frame.ubo);
             }
 
             for view in &self.swapchain_views {
