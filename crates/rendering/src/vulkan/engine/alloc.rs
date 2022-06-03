@@ -77,6 +77,10 @@ impl Buffer {
             buffer
         })
     }
+    
+    pub fn get_info(&self) -> &vk_mem::AllocationInfo {
+        &self.allocation.info
+    }
 }
 
 impl Deref for Buffer {

@@ -1,4 +1,4 @@
-use std::ffi::{CStr, CString};
+use std::ffi::CStr;
 use std::mem::ManuallyDrop;
 use std::sync::{Arc, Barrier};
 use std::thread::JoinHandle;
@@ -6,7 +6,7 @@ use std::thread::JoinHandle;
 use ash::vk;
 use crossbeam_channel::{Receiver, Sender};
 use log::{error, log, Level};
-use nalgebra::{Matrix4, Perspective3, Projective3, Transform3};
+use nalgebra::{Matrix4, Perspective3, Transform3};
 use smallvec::SmallVec;
 
 use crate::vulkan::engine::alloc::{destroy_allocator, GpuObject};
@@ -58,11 +58,11 @@ struct Frame {
     fence: vk::Fence,
     graphics_semaphore: vk::Semaphore,
     present_semaphore: vk::Semaphore,
-    ubo: ManuallyDrop<GpuObject<UBO>>
+    ubo: ManuallyDrop<GpuObject<Ubo>>
 }
 
 #[derive(Debug)]
-struct UBO {
+struct Ubo {
     view: nalgebra::Matrix4<f32>,
     projection: nalgebra::Matrix4<f32>,
 }
@@ -211,6 +211,13 @@ impl RenderingEngine for Engine {
     }
 }
 
+/// This function runs in worker threads and records rendering commands to secondary command buffers
+///
+/// # Arguments
+///
+/// * `receiver`: channel to receive rendering commands on
+/// * `device`: device handle
+/// * `barrier`: barrier for synchronizing worker threads with the main thread
 fn render_thread(receiver: Receiver<RenderCommand>, device: &ash::Device, barrier: &Barrier) {
     let mut cmd = vk::CommandBuffer::null();
     let mut last_mesh = std::ptr::null();
@@ -219,12 +226,14 @@ fn render_thread(receiver: Receiver<RenderCommand>, device: &ash::Device, barrie
     let mut projection = Perspective3::from_matrix_unchecked(Default::default());
     while let Ok(command) = receiver.recv() {
         match command {
+            // initialize some per frame data for this thread
             RenderCommand::Begin(cmd_buf, view_matrix, proj) => {
                 cmd = cmd_buf;
                 view = view_matrix;
                 projection = proj;
             }
 
+            // record the rendering commands
             RenderCommand::Render(mesh, material, transform) => {
                 debug_assert_ne!(cmd, vk::CommandBuffer::null());
                 if !cull_test(&mesh, &transform, &view, &projection) {
@@ -255,6 +264,7 @@ fn render_thread(receiver: Receiver<RenderCommand>, device: &ash::Device, barrie
                 }
             }
 
+            // reset pointers and synchronize with the other threads using the barrier
             RenderCommand::End => {
                 last_mesh = std::ptr::null();
                 last_material = std::ptr::null();
@@ -265,6 +275,15 @@ fn render_thread(receiver: Receiver<RenderCommand>, device: &ash::Device, barrie
     }
 }
 
+/// This function is used to perform queue submission and
+/// presentation in a dedicated thread
+///
+/// # Arguments
+///
+/// * `receiver`: the receiver for the channel that sends presentation data to the thread
+/// * `device`: device handle
+/// * `graphics_queue`: graphics queue handle
+/// * `presentation_queue`: presentation queue handle
 fn presentation_thread(
     receiver: Receiver<PresentData>,
     device: &ash::Device,
