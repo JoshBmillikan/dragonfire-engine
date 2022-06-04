@@ -36,7 +36,7 @@ impl Mesh {
             let staging_buf = Buffer::new(&create_info, &alloc_info)?;
             let ptr = staging_buf.get_info().get_mapped_data();
             copy_nonoverlapping(vertices.as_ptr() as *const u8, ptr, vertex_size);
-            copy_nonoverlapping(indices.as_ptr() as *const u8, ptr.offset(vertex_size as isize), index_size);
+            copy_nonoverlapping(indices.as_ptr() as *const u8, ptr.add(vertex_size), index_size);
 
             let alloc_info = vk_mem::AllocationCreateInfo {
                 usage: vk_mem::MemoryUsage::GpuOnly,

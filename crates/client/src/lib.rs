@@ -57,7 +57,7 @@ pub fn start() -> ! {
     });
 }
 
-fn create_window(events: &EventLoop<()>) -> Result<Window, Box<dyn Error>> {
+fn create_window<T>(events: &EventLoop<T>) -> Result<Window, Box<dyn Error>> {
     let settings = &CONFIG.graphics;
     Ok(WindowBuilder::new()
         .with_inner_size(LogicalSize {

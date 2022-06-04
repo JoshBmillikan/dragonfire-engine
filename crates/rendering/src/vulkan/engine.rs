@@ -11,6 +11,7 @@ use smallvec::SmallVec;
 
 use crate::vulkan::engine::alloc::{destroy_allocator, GpuObject};
 use crate::{cull_test, Material, Mesh, RenderingEngine};
+use crate::vulkan::engine::pipeline::cleanup_cache;
 
 pub(crate) mod alloc;
 mod init;
@@ -206,7 +207,7 @@ impl RenderingEngine for Engine {
         }
         unsafe {
             self.device.device_wait_idle().unwrap();
-            todo!()
+            todo!("Handle resizing the swapchain")
         }
     }
 }
@@ -353,6 +354,7 @@ impl Drop for Engine {
             self.swapchain_loader
                 .destroy_swapchain(self.swapchain, None);
             destroy_allocator();
+            cleanup_cache(&self.device);
             self.device.destroy_device(None);
             self.surface_loader.destroy_surface(self.surface, None);
             #[cfg(feature = "validation-layers")]
