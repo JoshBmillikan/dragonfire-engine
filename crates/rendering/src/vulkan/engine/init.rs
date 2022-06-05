@@ -13,9 +13,11 @@ use log::{info, warn};
 use raw_window_handle::HasRawWindowHandle;
 use smallvec::SmallVec;
 
-use crate::GraphicsSettings;
-use crate::vulkan::engine::{debug_callback, Engine, Frame, FRAMES_IN_FLIGHT, presentation_thread, render_thread};
 use crate::vulkan::engine::alloc::{create_allocator, GpuObject};
+use crate::vulkan::engine::{
+    debug_callback, presentation_thread, render_thread, Engine, Frame, FRAMES_IN_FLIGHT,
+};
+use crate::GraphicsSettings;
 
 impl Engine {
     /// Creates the vulkan rendering engine using a window handle and the graphics settings
@@ -36,7 +38,7 @@ impl Engine {
         let extensions = vec![
             ash::extensions::khr::Swapchain::name(),
             ash::extensions::khr::DynamicRendering::name(),
-            vk::ExtMemoryBudgetFn::name()
+            vk::ExtMemoryBudgetFn::name(),
         ];
         let physical_device =
             get_physical_device(&instance, surface, &surface_loader, &extensions)?;
@@ -63,25 +65,45 @@ impl Engine {
         let swapchain_views =
             create_swapchain_views(&swapchain_images, &device, surface_format.format)?;
 
-        let thread_count = 1.max(available_parallelism().map(NonZeroUsize::get).unwrap_or_default() / 2);
+        let thread_count = 1.max(
+            available_parallelism()
+                .map(NonZeroUsize::get)
+                .unwrap_or_default()
+                / 2,
+        );
         info!("Using {thread_count} render threads");
         let frames = (0..FRAMES_IN_FLIGHT)
             .map(|_| create_frame(&device, queue_families[0], thread_count))
             .collect::<Result<SmallVec<[_; FRAMES_IN_FLIGHT]>, Box<dyn Error>>>()?;
 
         let render_barrier = Arc::new(Barrier::new(thread_count + 1));
-        let (render_channels, render_thread_handles) = (0..thread_count).map(|_| {
-            let (sender, receiver) = crossbeam_channel::bounded(16);
-            let device = device.clone();
-            let render_barrier = render_barrier.clone();
-            (sender, spawn(move || render_thread(receiver, &device, &render_barrier)))
-        }).unzip();
+        let (render_channels, render_thread_handles) = (0..thread_count)
+            .map(|_| {
+                let (sender, receiver) = crossbeam_channel::bounded(16);
+                let device = device.clone();
+                let render_barrier = render_barrier.clone();
+                (
+                    sender,
+                    spawn(move || render_thread(receiver, &device, &render_barrier)),
+                )
+            })
+            .unzip();
 
         let (present_channel, present_thread_handle) = {
             let (sender, receiver) = crossbeam_channel::bounded(4);
             let device = device.clone();
-            (sender, spawn(move || presentation_thread(receiver, &device, graphics_queue, presentation_queue)))
+            (
+                sender,
+                spawn(move || {
+                    presentation_thread(receiver, &device, graphics_queue, presentation_queue)
+                }),
+            )
         };
+
+        let pool_info = vk::CommandPoolCreateInfo::builder()
+            .queue_family_index(queue_families[0])
+            .flags(vk::CommandPoolCreateFlags::TRANSIENT);
+        let utility_pool = device.create_command_pool(&pool_info, None)?;
 
         info!("Rendering engine initialization finished");
         Ok(Engine {
@@ -110,7 +132,8 @@ impl Engine {
             last_mesh: std::ptr::null(),
             last_material: std::ptr::null(),
             current_thread: 0,
-            current_image_index: 0
+            current_image_index: 0,
+            utility_pool,
         })
     }
 }
@@ -155,7 +178,7 @@ unsafe fn create_instance(
     }
     let layers = vec![
         #[cfg(feature = "validation-layers")]
-            CString::new("VK_LAYER_KHRONOS_validation").unwrap(),
+        CString::new("VK_LAYER_KHRONOS_validation").unwrap(),
     ];
     let layers = layers
         .iter()
@@ -179,10 +202,10 @@ unsafe fn create_instance(
         .enabled_extension_names(&extensions);
 
     #[cfg(feature = "validation-layers")]
-        let mut debug = get_debug_info();
+    let mut debug = get_debug_info();
 
     #[cfg(feature = "validation-layers")]
-        let create_info = create_info.push_next(&mut debug);
+    let create_info = create_info.push_next(&mut debug);
 
     Ok(Box::new(entry.create_instance(&create_info, None)?))
 }
@@ -231,19 +254,11 @@ unsafe fn get_physical_device(
                 == PhysicalDeviceType::DISCRETE_GPU
         })
         .ok_or("No valid gpu available")?;
-    let props = instance
-        .get_physical_device_properties(device);
+    let props = instance.get_physical_device_properties(device);
     if props.device_type != PhysicalDeviceType::DISCRETE_GPU {
         warn!("No discrete gpu found, falling back to integrated gpu");
     }
-    info!(
-        "Using gpu {:?}",
-        CStr::from_ptr(
-            props
-                .device_name
-                .as_ptr()
-        )
-    );
+    info!("Using gpu {:?}", CStr::from_ptr(props.device_name.as_ptr()));
     Ok(device)
 }
 
@@ -497,7 +512,7 @@ unsafe fn create_frame(
         })
         .collect::<VkResult<_>>()?;
 
-    let fence = device.create_fence(&Default::default(),None)?;
+    let fence = device.create_fence(&Default::default(), None)?;
     let graphics_semaphore = device.create_semaphore(&Default::default(), None)?;
     let present_semaphore = device.create_semaphore(&Default::default(), None)?;
 
@@ -511,7 +526,7 @@ unsafe fn create_frame(
         fence,
         graphics_semaphore,
         present_semaphore,
-        ubo: ManuallyDrop::new(ubo)
+        ubo: ManuallyDrop::new(ubo),
     })
 }
 

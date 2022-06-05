@@ -11,10 +11,11 @@ pub struct Mesh {
     index_buffer: Buffer
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, PartialOrd)]
+#[derive(Debug, Copy, Clone, PartialEq)]
 pub struct Vertex {
-    position: nalgebra::Vector3<f32>,
-    uv: nalgebra::Vector2<f32>
+    pub position: nalgebra::Vector3<f32>,
+    pub normal: nalgebra::UnitVector3<f32>,
+    //uv: nalgebra::Vector2<f32>
 }
 
 impl Mesh {

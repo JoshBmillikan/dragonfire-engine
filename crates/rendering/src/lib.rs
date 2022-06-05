@@ -1,5 +1,7 @@
+use std::error::Error;
+use std::path::Path;
 use std::sync::Arc;
-use nalgebra::{Matrix4, Perspective3, Transform3};
+use nalgebra::{Matrix4, Perspective3};
 use raw_window_handle::HasRawWindowHandle;
 use uom::si::f32::Angle;
 use serde::{Serialize, Deserialize};
@@ -23,6 +25,7 @@ pub trait RenderingEngine {
     fn render(&mut self, mesh: &Arc<Mesh>,material: &Arc<Material>, transform: &nalgebra::Transform3<f32>);
     fn end_rendering(&mut self);
     fn resize(&mut self, width: u32, height: u32);
+    fn load_model(&mut self, path: &Path) -> Result<Arc<Mesh>, Box<dyn Error>>;
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

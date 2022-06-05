@@ -1,5 +1,9 @@
+use std::error::Error;
 use std::ffi::CStr;
+use std::fs::File;
+use std::io::BufReader;
 use std::mem::ManuallyDrop;
+use std::path::Path;
 use std::sync::{Arc, Barrier};
 use std::thread::JoinHandle;
 
@@ -7,11 +11,13 @@ use ash::vk;
 use crossbeam_channel::{Receiver, Sender};
 use log::{error, log, Level};
 use nalgebra::{Matrix4, Perspective3, Transform3};
+use obj::{load_obj, Obj};
 use smallvec::SmallVec;
 
 use crate::vulkan::engine::alloc::{destroy_allocator, GpuObject};
 use crate::{cull_test, Material, Mesh, RenderingEngine};
 use crate::vulkan::engine::pipeline::cleanup_cache;
+use crate::vulkan::mesh::Vertex;
 
 pub(crate) mod alloc;
 mod init;
@@ -48,6 +54,7 @@ pub struct Engine {
     last_material: *const Material,
     current_thread: usize,
     current_image_index: u32,
+    utility_pool: vk::CommandPool
 }
 
 #[derive(Debug)]
@@ -209,6 +216,29 @@ impl RenderingEngine for Engine {
             self.device.device_wait_idle().unwrap();
             todo!("Handle resizing the swapchain")
         }
+    }
+
+    fn load_model(&mut self, path: &Path) -> Result<Arc<Mesh>, Box<dyn Error>> {
+        let obj: Obj = load_obj(BufReader::new(File::open(path)?))?;
+        let vertices = obj.vertices.into_iter().map(|vertex| {
+            Vertex {
+                position: nalgebra::Vector3::from(vertex.position),
+                normal: nalgebra::UnitVector3::new_normalize(nalgebra::Vector3::from(vertex.normal)),
+            }
+        }).collect();
+        let indices = obj.indices.into_iter().map(|index| index as u32).collect();
+
+        let alloc = vk::CommandBufferAllocateInfo::builder()
+            .command_buffer_count(1)
+            .command_pool(self.utility_pool)
+            .level(vk::CommandBufferLevel::PRIMARY);
+        let cmd = unsafe {self.device.allocate_command_buffers(&alloc)?}[0];
+
+        let mesh = Mesh::new(vertices, indices, &self.device, cmd, self.graphics_queue);
+        let cmd = [cmd];
+        unsafe {self.device.free_command_buffers(self.utility_pool, &cmd)};
+
+        Ok(Arc::new(mesh?))
     }
 }
 
