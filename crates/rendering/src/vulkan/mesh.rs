@@ -2,6 +2,7 @@ use std::error::Error;
 use std::ptr::copy_nonoverlapping;
 use ash::vk;
 use ash::vk::DeviceSize;
+use log::trace;
 use crate::vulkan::engine::alloc::Buffer;
 
 pub struct Mesh {
@@ -82,6 +83,7 @@ impl Mesh {
             device.queue_submit(queue, &submit_info, vk::Fence::null())?;
             device.queue_wait_idle(queue)?;
 
+            trace!("Loaded model with {} vertices, {} indices", vertices.len(), indices.len());
             Ok(Mesh {
                 indices,
                 _vertices: vertices,

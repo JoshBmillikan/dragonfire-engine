@@ -9,7 +9,7 @@ use std::thread::JoinHandle;
 
 use ash::vk;
 use crossbeam_channel::{Receiver, Sender};
-use log::{error, log, Level};
+use log::{error, log, Level, info};
 use nalgebra::{Matrix4, Perspective3, Transform3};
 use obj::{load_obj, Obj};
 use smallvec::SmallVec;
@@ -42,8 +42,8 @@ pub struct Engine {
     swapchain: vk::SwapchainKHR,
     swapchain_loader: Arc<ash::extensions::khr::Swapchain>,
     swapchain_extent: vk::Extent2D,
-    swapchain_images: Vec<vk::Image>,
-    swapchain_views: Vec<vk::ImageView>,
+    // swapchain_images: Vec<vk::Image>,
+    // swapchain_views: Vec<vk::ImageView>,
     frames: [Frame; FRAMES_IN_FLIGHT],
     render_channels: SmallVec<[Sender<RenderCommand>; 12]>,
     render_thread_handles: SmallVec<[JoinHandle<()>; 12]>,
@@ -71,8 +71,8 @@ struct Frame {
 
 #[derive(Debug)]
 struct Ubo {
-    view: nalgebra::Matrix4<f32>,
-    projection: nalgebra::Matrix4<f32>,
+    view: Matrix4<f32>,
+    projection: Matrix4<f32>,
 }
 
 enum RenderCommand {
@@ -91,7 +91,7 @@ struct PresentData {
 }
 
 impl RenderingEngine for Engine {
-    fn begin_rendering(&mut self, view: &Transform3<f32>, projection: &Perspective3<f32>) {
+    fn begin_rendering(&mut self, view: &Matrix4<f32>, projection: &Perspective3<f32>) {
         let frame = &mut self.frames[self.frame_count as usize % FRAMES_IN_FLIGHT];
         let fences = [frame.fence];
         unsafe {
@@ -108,7 +108,7 @@ impl RenderingEngine for Engine {
                 )
                 .expect("Failed to acquire swapchain image");
             self.current_image_index = index;
-            frame.ubo.view = view.to_homogeneous();
+            frame.ubo.view = *view;
             frame.ubo.projection = projection.to_homogeneous();
             self.device
                 .reset_command_pool(frame.primary_pool, vk::CommandPoolResetFlags::empty())
@@ -151,7 +151,7 @@ impl RenderingEngine for Engine {
                 channel
                     .send(RenderCommand::Begin(
                         frame.secondary_buffers[index],
-                        view.to_homogeneous(),
+                        *view,
                         *projection,
                     ))
                     .unwrap();
@@ -159,7 +159,7 @@ impl RenderingEngine for Engine {
         }
     }
 
-    fn render(&mut self, mesh: &Arc<Mesh>, material: &Arc<Material>, transform: &Transform3<f32>) {
+    fn render(&mut self, mesh: &Arc<Mesh>, material: &Arc<Material>, transform: Matrix4<f32>) {
         if !(std::ptr::eq(mesh.as_ref(), self.last_mesh)
             && std::ptr::eq(material.as_ref(), self.last_material))
         {
@@ -172,7 +172,7 @@ impl RenderingEngine for Engine {
             .send(RenderCommand::Render(
                 mesh.clone(),
                 material.clone(),
-                transform.to_homogeneous(),
+                transform,
             ))
             .expect("Failed to send render command");
     }
@@ -233,12 +233,15 @@ impl RenderingEngine for Engine {
             .command_pool(self.utility_pool)
             .level(vk::CommandBufferLevel::PRIMARY);
         let cmd = unsafe {self.device.allocate_command_buffers(&alloc)?}[0];
-
-        let mesh = Mesh::new(vertices, indices, &self.device, cmd, self.graphics_queue);
+        let mesh = Mesh::new(vertices, indices, &self.device, cmd, self.graphics_queue).map(Arc::new);
         let cmd = [cmd];
         unsafe {self.device.free_command_buffers(self.utility_pool, &cmd)};
+        info!("Loaded model {path:?}");
+        mesh
+    }
 
-        Ok(Arc::new(mesh?))
+    fn load_material(&mut self) -> Result<Arc<Material>, Box<dyn Error>> {
+        todo!()
     }
 }
 
@@ -366,6 +369,7 @@ impl Drop for Engine {
                 }
             }
 
+            self.device.destroy_command_pool(self.utility_pool, None);
             for frame in &mut self.frames {
                 self.device.destroy_command_pool(frame.primary_pool, None);
                 for pool in &frame.secondary_pools {
@@ -378,9 +382,6 @@ impl Drop for Engine {
                 ManuallyDrop::drop(&mut frame.ubo);
             }
 
-            for view in &self.swapchain_views {
-                self.device.destroy_image_view(*view, None);
-            }
             self.swapchain_loader
                 .destroy_swapchain(self.swapchain, None);
             destroy_allocator();

@@ -1,3 +1,4 @@
+use std::error::Error;
 use ash::vk;
 
 pub struct Material {
@@ -5,6 +6,11 @@ pub struct Material {
 }
 
 impl Material {
+    pub(super) fn new() -> Result<Self, Box<dyn Error>> {
+
+        todo!()
+    }
+
     pub(super) fn get_pipeline_layout(&self) -> vk::PipelineLayout {
         todo!()
     }

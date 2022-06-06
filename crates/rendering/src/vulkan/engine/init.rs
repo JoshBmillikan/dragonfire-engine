@@ -60,10 +60,10 @@ impl Engine {
             surface_format.format,
             settings,
         )?;
-        let swapchain_images = swapchain_loader.get_swapchain_images(swapchain)?;
-        info!("Using {} swapchain images", swapchain_images.len());
-        let swapchain_views =
-            create_swapchain_views(&swapchain_images, &device, surface_format.format)?;
+        //let swapchain_images = swapchain_loader.get_swapchain_images(swapchain)?;
+        //info!("Using {} swapchain images", swapchain_images.len());
+        //let swapchain_views =
+         //   create_swapchain_views(&swapchain_images, &device, surface_format.format)?;
 
         let thread_count = 1.max(
             available_parallelism()
@@ -121,8 +121,8 @@ impl Engine {
             swapchain,
             swapchain_loader,
             swapchain_extent,
-            swapchain_images,
-            swapchain_views,
+            //swapchain_images,
+            //swapchain_views,
             frames: frames.into_inner().unwrap(),
             render_channels,
             render_thread_handles,

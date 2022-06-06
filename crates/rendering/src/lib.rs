@@ -16,16 +16,17 @@ mod vulkan {
 }
 
 #[cfg(feature = "vulkan")]
-type Material = vulkan::material::Material;
+pub type Material = vulkan::material::Material;
 #[cfg(feature = "vulkan")]
-type Mesh = vulkan::mesh::Mesh;
+pub type Mesh = vulkan::mesh::Mesh;
 
 pub trait RenderingEngine {
-    fn begin_rendering(&mut self, view: &nalgebra::Transform3<f32>, projection: &nalgebra::Perspective3<f32>);
-    fn render(&mut self, mesh: &Arc<Mesh>,material: &Arc<Material>, transform: &nalgebra::Transform3<f32>);
+    fn begin_rendering(&mut self, view: &Matrix4<f32>, projection: &nalgebra::Perspective3<f32>);
+    fn render(&mut self, mesh: &Arc<Mesh>,material: &Arc<Material>, transform: Matrix4<f32>);
     fn end_rendering(&mut self);
     fn resize(&mut self, width: u32, height: u32);
     fn load_model(&mut self, path: &Path) -> Result<Arc<Mesh>, Box<dyn Error>>;
+    fn load_material(&mut self) -> Result<Arc<Material>, Box<dyn Error>>;
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
