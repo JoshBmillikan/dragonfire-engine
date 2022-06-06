@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 use std::sync::Arc;
-use nalgebra::{Matrix4, Perspective3, Transform3};
+use nalgebra::{Matrix4, Perspective3};
 use uom::si::f64::Time;
 use rendering::{Material, Mesh, RenderingEngine};
 

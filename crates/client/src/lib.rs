@@ -24,7 +24,7 @@ pub fn start() -> ! {
     info!("Starting");
     let event_loop = EventLoop::new();
     let window = create_window(&event_loop).expect("Failed to create window");
-    let rendering_engine = create_rendering_engine(&window, &CONFIG.graphics);
+    let rendering_engine = create_rendering_engine(&window, &CONFIG.read().graphics);
     let mut game = Game::new(rendering_engine);
     let mut time = Instant::now();
     event_loop.run(move |event, _, control_flow| {
@@ -58,7 +58,7 @@ pub fn start() -> ! {
 }
 
 fn create_window<T>(events: &EventLoop<T>) -> Result<Window, Box<dyn Error>> {
-    let settings = &CONFIG.graphics;
+    let settings = &CONFIG.read().graphics;
     Ok(WindowBuilder::new()
         .with_inner_size(LogicalSize {
             width: settings.resolution[0],
@@ -70,7 +70,8 @@ fn create_window<T>(events: &EventLoop<T>) -> Result<Window, Box<dyn Error>> {
 }
 
 fn init_logging() -> Result<(), fern::InitError> {
-    let level = match CONFIG.log_level.as_str() {
+    let cfg = CONFIG.read();
+    let level = match cfg.log_level.as_str() {
         "trace" => Some(LevelFilter::Trace),
         "debug" => Some(LevelFilter::Debug),
         "info" => Some(LevelFilter::Info),
@@ -102,7 +103,7 @@ fn init_logging() -> Result<(), fern::InitError> {
         .chain(fern::log_file(&path)?)
         .apply()?;
     if level.is_none() {
-        info!("Unknown log level option \"{}\"", CONFIG.log_level);
+        info!("Unknown log level option \"{}\"", cfg.log_level);
     }
     Ok(())
 }
