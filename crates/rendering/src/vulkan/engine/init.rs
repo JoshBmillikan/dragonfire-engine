@@ -60,10 +60,10 @@ impl Engine {
             surface_format.format,
             settings,
         )?;
-        //let swapchain_images = swapchain_loader.get_swapchain_images(swapchain)?;
-        //info!("Using {} swapchain images", swapchain_images.len());
-        //let swapchain_views =
-         //   create_swapchain_views(&swapchain_images, &device, surface_format.format)?;
+        let swapchain_images = swapchain_loader.get_swapchain_images(swapchain)?;
+        info!("Using {} swapchain images", swapchain_images.len());
+        let swapchain_views =
+            create_swapchain_views(&swapchain_images, &device, surface_format.format)?;
 
         let thread_count = 1.max(
             available_parallelism()
@@ -121,8 +121,8 @@ impl Engine {
             swapchain,
             swapchain_loader,
             swapchain_extent,
-            //swapchain_images,
-            //swapchain_views,
+            swapchain_images,
+            swapchain_views,
             frames: frames.into_inner().unwrap(),
             render_channels,
             render_thread_handles,
@@ -354,8 +354,11 @@ unsafe fn create_device(
         info!("Loaded device extension {:?}", CStr::from_ptr(*ext));
     }
 
+    let mut features = vk::PhysicalDeviceDynamicRenderingFeatures::builder().dynamic_rendering(true);
+
     let create_info = vk::DeviceCreateInfo::builder()
         .enabled_extension_names(&extensions)
+        .push_next(&mut features)
         .queue_create_infos(&queue_info);
     Ok(Arc::new(instance.create_device(
         physical_device,
@@ -512,7 +515,9 @@ unsafe fn create_frame(
         })
         .collect::<VkResult<_>>()?;
 
-    let fence = device.create_fence(&Default::default(), None)?;
+    let fence_info = vk::FenceCreateInfo::builder()
+        .flags(vk::FenceCreateFlags::SIGNALED);
+    let fence = device.create_fence(&fence_info, None)?;
     let graphics_semaphore = device.create_semaphore(&Default::default(), None)?;
     let present_semaphore = device.create_semaphore(&Default::default(), None)?;
 

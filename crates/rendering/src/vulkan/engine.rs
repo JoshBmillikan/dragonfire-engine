@@ -16,7 +16,7 @@ use smallvec::SmallVec;
 
 use crate::vulkan::engine::alloc::{destroy_allocator, GpuObject};
 use crate::{cull_test, Material, Mesh, RenderingEngine};
-use crate::vulkan::engine::pipeline::cleanup_cache;
+use crate::vulkan::engine::pipeline::{cleanup_cache, create_graphics_pipeline};
 use crate::vulkan::mesh::Vertex;
 
 pub(crate) mod alloc;
@@ -42,8 +42,8 @@ pub struct Engine {
     swapchain: vk::SwapchainKHR,
     swapchain_loader: Arc<ash::extensions::khr::Swapchain>,
     swapchain_extent: vk::Extent2D,
-    // swapchain_images: Vec<vk::Image>,
-    // swapchain_views: Vec<vk::ImageView>,
+    swapchain_images: Vec<vk::Image>,
+    swapchain_views: Vec<vk::ImageView>,
     frames: [Frame; FRAMES_IN_FLIGHT],
     render_channels: SmallVec<[Sender<RenderCommand>; 12]>,
     render_thread_handles: SmallVec<[JoinHandle<()>; 12]>,
@@ -98,6 +98,7 @@ impl RenderingEngine for Engine {
             if let Err(err) = self.device.wait_for_fences(&fences, true, u64::MAX) {
                 error!("Error waiting on fence: {err}");
             }
+            self.device.reset_fences(&fences).unwrap();
             let (index, _ok) = self
                 .swapchain_loader
                 .acquire_next_image(
@@ -127,7 +128,8 @@ impl RenderingEngine for Engine {
             for buf in &frame.secondary_buffers {
                 let colors = [self.surface_format.format];
                 let mut rendering_info = vk::CommandBufferInheritanceRenderingInfo::builder()
-                    .color_attachment_formats(&colors);
+                    .color_attachment_formats(&colors)
+                    .rasterization_samples(vk::SampleCountFlags::TYPE_1);
                 let inheritance_info =
                     vk::CommandBufferInheritanceInfo::builder().push_next(&mut rendering_info);
                 let begin_info = vk::CommandBufferBeginInfo::builder()
@@ -139,8 +141,22 @@ impl RenderingEngine for Engine {
                 self.device.begin_command_buffer(*buf, &begin_info).unwrap();
             }
 
+            let color_attachment = [vk::RenderingAttachmentInfo::builder()
+                .image_view(self.swapchain_views[index as usize])
+                .image_layout(vk::ImageLayout::ATTACHMENT_OPTIMAL)
+                .load_op(vk::AttachmentLoadOp::CLEAR)
+                .store_op(vk::AttachmentStoreOp::STORE)
+                .clear_value(vk::ClearValue {
+                    color: vk::ClearColorValue {
+                        float32: [1.;4]
+                    }
+                })
+                .build()];
+
             let rendering_info = vk::RenderingInfo::builder()
                 .flags(vk::RenderingFlagsKHR::CONTENTS_SECONDARY_COMMAND_BUFFERS)
+                .layer_count(1)
+                .color_attachments(&color_attachment)
                 .render_area(vk::Rect2D {
                     offset: Default::default(),
                     extent: self.swapchain_extent,
@@ -241,7 +257,13 @@ impl RenderingEngine for Engine {
     }
 
     fn load_material(&mut self) -> Result<Arc<Material>, Box<dyn Error>> {
-        todo!()
+        let (pipeline, layout) = create_graphics_pipeline(&self.device, self.surface_format.format, self.swapchain_extent)?;
+        info!("Created graphics pipeline");
+        Ok(Arc::new(Material {
+            pipeline,
+            layout,
+            device: self.device.clone()
+        }))
     }
 }
 
@@ -276,25 +298,26 @@ fn render_thread(receiver: Receiver<RenderCommand>, device: &ash::Device, barrie
                 unsafe {
                     if !std::ptr::eq(mesh.as_ref(), last_mesh) {
                         last_mesh = mesh.as_ref();
-                        mesh.bind(device, cmd);
+                       // mesh.bind(device, cmd);
                     }
                     if !std::ptr::eq(material.as_ref(), last_material) {
                         last_material = material.as_ref();
                         material.bind(device, cmd);
                     }
 
-                    device.cmd_push_constants(
-                        cmd,
-                        material.get_pipeline_layout(),
-                        vk::ShaderStageFlags::VERTEX,
-                        0,
-                        std::slice::from_raw_parts(
-                            transform.as_ptr() as *const u8,
-                            std::mem::size_of::<Transform3<f32>>(),
-                        ),
-                    );
+                    // device.cmd_push_constants(
+                    //     cmd,
+                    //     material.get_pipeline_layout(),
+                    //     vk::ShaderStageFlags::VERTEX,
+                    //     0,
+                    //     std::slice::from_raw_parts(
+                    //         transform.as_ptr() as *const u8,
+                    //         std::mem::size_of::<Transform3<f32>>(),
+                    //     ),
+                    // );
 
-                    device.cmd_draw_indexed(cmd, mesh.get_index_count(), 1, 0, 0, 0);
+                    //device.cmd_draw_indexed(cmd, mesh.get_index_count(), 1, 0, 0, 0);
+                    device.cmd_draw(cmd, 3, 1, 0, 0);
                 }
             }
 
@@ -380,6 +403,10 @@ impl Drop for Engine {
                 self.device.destroy_semaphore(frame.present_semaphore, None);
                 self.device.destroy_fence(frame.fence, None);
                 ManuallyDrop::drop(&mut frame.ubo);
+            }
+
+            for view in &self.swapchain_views {
+                self.device.destroy_image_view(*view, None);
             }
 
             self.swapchain_loader
