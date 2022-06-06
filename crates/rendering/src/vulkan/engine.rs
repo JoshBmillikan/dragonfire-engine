@@ -10,9 +10,10 @@ use std::thread::JoinHandle;
 use ash::vk;
 use ash::vk::DependencyFlags;
 use crossbeam_channel::{Receiver, Sender};
-use log::{error, info, log, Level};
+use log::{error, info, log, Level, warn};
 use nalgebra::{Matrix4, Perspective3, Transform3};
 use obj::{load_obj, Obj};
+use parking_lot::{Condvar, Mutex};
 use smallvec::SmallVec;
 
 use crate::vulkan::engine::alloc::{destroy_allocator, GpuObject};
@@ -89,6 +90,7 @@ struct PresentData {
     swapchain: vk::SwapchainKHR,
     swapchain_loader: Arc<ash::extensions::khr::Swapchain>,
     image_index: u32,
+    signal_fence: vk::Fence,
 }
 
 impl RenderingEngine for Engine {
@@ -100,7 +102,7 @@ impl RenderingEngine for Engine {
                 error!("Error waiting on fence: {err}");
             }
             self.device.reset_fences(&fences).unwrap();
-            let (index, _ok) = self
+            let (index, _suboptimal) = self
                 .swapchain_loader
                 .acquire_next_image(
                     self.swapchain,
@@ -109,6 +111,9 @@ impl RenderingEngine for Engine {
                     vk::Fence::null(),
                 )
                 .expect("Failed to acquire swapchain image");
+            if _suboptimal {
+                warn!("Swapchain is suboptimal");
+            }
             self.current_image_index = index;
             frame.ubo.view = *view;
             frame.ubo.projection = projection.to_homogeneous();
@@ -268,6 +273,7 @@ impl RenderingEngine for Engine {
                 swapchain: self.swapchain,
                 swapchain_loader: self.swapchain_loader.clone(),
                 image_index: self.current_image_index,
+                signal_fence: frame.fence,
             })
             .unwrap();
         self.frame_count += 1;
@@ -406,6 +412,7 @@ fn presentation_thread(
     presentation_queue: vk::Queue,
 ) {
     while let Ok(data) = receiver.recv() {
+        //let _lock = data.mutex.lock();
         let submit_info = [vk::SubmitInfo::builder()
             .command_buffers(&[data.cmd])
             .wait_semaphores(&[data.present_semaphore])
@@ -423,10 +430,12 @@ fn presentation_thread(
 
         unsafe {
             device
-                .queue_submit(graphics_queue, &submit_info, vk::Fence::null())
+                .queue_submit(graphics_queue, &submit_info, data.signal_fence)
+                .map_err(|e| info!("Queue submission error {e:?}"))
                 .expect("Queue submit failed");
             data.swapchain_loader
                 .queue_present(presentation_queue, &present_info)
+                .map_err(|e| info!("Queue presentation error {e:?}"))
                 .expect("Queue presentation failed");
         }
     }

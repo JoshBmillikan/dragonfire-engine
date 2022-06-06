@@ -90,7 +90,7 @@ impl Engine {
             .unzip();
 
         let (present_channel, present_thread_handle) = {
-            let (sender, receiver) = crossbeam_channel::bounded(4);
+            let (sender, receiver) = crossbeam_channel::bounded(0);
             let device = device.clone();
             (
                 sender,

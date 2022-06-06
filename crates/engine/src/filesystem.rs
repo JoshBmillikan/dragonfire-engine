@@ -26,6 +26,7 @@ impl Directories {
         std::fs::create_dir_all(project.config_dir()).unwrap();
         std::fs::create_dir_all(project.data_dir()).unwrap();
         std::fs::create_dir_all(project.data_local_dir()).unwrap();
+        std::fs::create_dir_all(project.cache_dir()).unwrap();
         std::fs::create_dir_all(&asset).unwrap();
         Directories {
             base,

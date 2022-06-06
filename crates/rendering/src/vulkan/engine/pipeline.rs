@@ -150,9 +150,9 @@ pub fn cleanup_cache(device: &ash::Device) {
             if let Ok(data) = device.get_pipeline_cache_data(*cache) {
                 let path = DIRS.project.cache_dir().join("pipeline_cache");
                 if let Err(e) = fs::write(&path, &data) {
-                    error!("Failed to write pipeline cache to disk, Error: {e}");
+                    error!("Failed to write pipeline cache to {path:?}, Error: {e}");
                 } else {
-                    info!("Saved pipeline cache to {}", path.to_string_lossy());
+                    info!("Saved pipeline cache to {path:?}");
                 }
             }
             device.destroy_pipeline_cache(*cache, None);
