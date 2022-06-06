@@ -8,16 +8,17 @@ use std::sync::{Arc, Barrier};
 use std::thread::JoinHandle;
 
 use ash::vk;
+use ash::vk::DependencyFlags;
 use crossbeam_channel::{Receiver, Sender};
-use log::{error, log, Level, info};
+use log::{error, info, log, Level};
 use nalgebra::{Matrix4, Perspective3, Transform3};
 use obj::{load_obj, Obj};
 use smallvec::SmallVec;
 
 use crate::vulkan::engine::alloc::{destroy_allocator, GpuObject};
-use crate::{cull_test, Material, Mesh, RenderingEngine};
 use crate::vulkan::engine::pipeline::{cleanup_cache, create_graphics_pipeline};
 use crate::vulkan::mesh::Vertex;
+use crate::{cull_test, Material, Mesh, RenderingEngine};
 
 pub(crate) mod alloc;
 mod init;
@@ -54,7 +55,7 @@ pub struct Engine {
     last_material: *const Material,
     current_thread: usize,
     current_image_index: u32,
-    utility_pool: vk::CommandPool
+    utility_pool: vk::CommandPool,
 }
 
 #[derive(Debug)]
@@ -66,7 +67,7 @@ struct Frame {
     fence: vk::Fence,
     graphics_semaphore: vk::Semaphore,
     present_semaphore: vk::Semaphore,
-    ubo: ManuallyDrop<GpuObject<Ubo>>
+    ubo: ManuallyDrop<GpuObject<Ubo>>,
 }
 
 #[derive(Debug)]
@@ -125,6 +126,30 @@ impl RenderingEngine for Engine {
                 .begin_command_buffer(frame.primary_buffer, &begin_info)
                 .unwrap();
 
+            let image_barrier = [vk::ImageMemoryBarrier::builder()
+                .dst_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_WRITE)
+                .old_layout(vk::ImageLayout::UNDEFINED)
+                .new_layout(vk::ImageLayout::ATTACHMENT_OPTIMAL)
+                .image(self.swapchain_images[self.current_image_index as usize])
+                .subresource_range(vk::ImageSubresourceRange {
+                    aspect_mask: vk::ImageAspectFlags::COLOR,
+                    base_mip_level: 0,
+                    level_count: 1,
+                    base_array_layer: 0,
+                    layer_count: 1,
+                })
+                .build()];
+
+            self.device.cmd_pipeline_barrier(
+                frame.primary_buffer,
+                vk::PipelineStageFlags::TOP_OF_PIPE,
+                vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+                vk::DependencyFlags::empty(),
+                &[],
+                &[],
+                &image_barrier,
+            );
+
             for buf in &frame.secondary_buffers {
                 let colors = [self.surface_format.format];
                 let mut rendering_info = vk::CommandBufferInheritanceRenderingInfo::builder()
@@ -147,9 +172,7 @@ impl RenderingEngine for Engine {
                 .load_op(vk::AttachmentLoadOp::CLEAR)
                 .store_op(vk::AttachmentStoreOp::STORE)
                 .clear_value(vk::ClearValue {
-                    color: vk::ClearColorValue {
-                        float32: [1.;4]
-                    }
+                    color: vk::ClearColorValue { float32: [1.; 4] },
                 })
                 .build()];
 
@@ -200,6 +223,20 @@ impl RenderingEngine for Engine {
         self.render_barrier.wait();
         let frame = &self.frames[self.frame_count as usize % FRAMES_IN_FLIGHT];
 
+        let image_barrier = [vk::ImageMemoryBarrier::builder()
+            .src_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_WRITE)
+            .old_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
+            .new_layout(vk::ImageLayout::PRESENT_SRC_KHR)
+            .image(self.swapchain_images[self.current_image_index as usize])
+            .subresource_range(vk::ImageSubresourceRange {
+                aspect_mask: vk::ImageAspectFlags::COLOR,
+                base_mip_level: 0,
+                level_count: 1,
+                base_array_layer: 0,
+                layer_count: 1,
+            })
+            .build()];
+
         unsafe {
             for buffer in &frame.secondary_buffers {
                 self.device.end_command_buffer(*buffer).unwrap();
@@ -207,6 +244,17 @@ impl RenderingEngine for Engine {
             self.device
                 .cmd_execute_commands(frame.primary_buffer, &frame.secondary_buffers);
             self.device.cmd_end_rendering(frame.primary_buffer);
+
+            self.device.cmd_pipeline_barrier(
+                frame.primary_buffer,
+                vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+                vk::PipelineStageFlags::BOTTOM_OF_PIPE,
+                DependencyFlags::empty(),
+                &[],
+                &[],
+                &image_barrier,
+            );
+
             self.device
                 .end_command_buffer(frame.primary_buffer)
                 .unwrap();
@@ -222,6 +270,7 @@ impl RenderingEngine for Engine {
                 image_index: self.current_image_index,
             })
             .unwrap();
+        self.frame_count += 1;
     }
 
     fn resize(&mut self, width: u32, height: u32) {
@@ -236,33 +285,42 @@ impl RenderingEngine for Engine {
 
     fn load_model(&mut self, path: &Path) -> Result<Arc<Mesh>, Box<dyn Error>> {
         let obj: Obj = load_obj(BufReader::new(File::open(path)?))?;
-        let vertices = obj.vertices.into_iter().map(|vertex| {
-            Vertex {
+        let vertices = obj
+            .vertices
+            .into_iter()
+            .map(|vertex| Vertex {
                 position: nalgebra::Vector3::from(vertex.position),
-                normal: nalgebra::UnitVector3::new_normalize(nalgebra::Vector3::from(vertex.normal)),
-            }
-        }).collect();
+                normal: nalgebra::UnitVector3::new_normalize(nalgebra::Vector3::from(
+                    vertex.normal,
+                )),
+            })
+            .collect();
         let indices = obj.indices.into_iter().map(|index| index as u32).collect();
 
         let alloc = vk::CommandBufferAllocateInfo::builder()
             .command_buffer_count(1)
             .command_pool(self.utility_pool)
             .level(vk::CommandBufferLevel::PRIMARY);
-        let cmd = unsafe {self.device.allocate_command_buffers(&alloc)?}[0];
-        let mesh = Mesh::new(vertices, indices, &self.device, cmd, self.graphics_queue).map(Arc::new);
+        let cmd = unsafe { self.device.allocate_command_buffers(&alloc)? }[0];
+        let mesh =
+            Mesh::new(vertices, indices, &self.device, cmd, self.graphics_queue).map(Arc::new);
         let cmd = [cmd];
-        unsafe {self.device.free_command_buffers(self.utility_pool, &cmd)};
+        unsafe { self.device.free_command_buffers(self.utility_pool, &cmd) };
         info!("Loaded model {path:?}");
         mesh
     }
 
     fn load_material(&mut self) -> Result<Arc<Material>, Box<dyn Error>> {
-        let (pipeline, layout) = create_graphics_pipeline(&self.device, self.surface_format.format, self.swapchain_extent)?;
+        let (pipeline, layout) = create_graphics_pipeline(
+            &self.device,
+            self.surface_format.format,
+            self.swapchain_extent,
+        )?;
         info!("Created graphics pipeline");
         Ok(Arc::new(Material {
             pipeline,
             layout,
-            device: self.device.clone()
+            device: self.device.clone(),
         }))
     }
 }
@@ -298,7 +356,7 @@ fn render_thread(receiver: Receiver<RenderCommand>, device: &ash::Device, barrie
                 unsafe {
                     if !std::ptr::eq(mesh.as_ref(), last_mesh) {
                         last_mesh = mesh.as_ref();
-                       // mesh.bind(device, cmd);
+                        // mesh.bind(device, cmd);
                     }
                     if !std::ptr::eq(material.as_ref(), last_material) {
                         last_material = material.as_ref();
