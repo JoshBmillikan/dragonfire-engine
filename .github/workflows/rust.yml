@@ -17,7 +17,7 @@ jobs:
     steps:
     - uses: actions/checkout@v3
     - name: Install GLSLC
-      run: apt install glslc
+      run: sudo apt install glslc
     - name: Build
       run: cargo build --verbose
     - name: Run tests
