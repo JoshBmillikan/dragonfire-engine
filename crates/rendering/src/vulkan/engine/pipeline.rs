@@ -117,6 +117,7 @@ pub fn create_graphics_pipeline(
     }
 }
 
+/// Load a shader with the given filename
 fn load_spv(
     device: &ash::Device,
     filename: impl AsRef<Path>,
@@ -129,6 +130,7 @@ fn load_spv(
     Ok(unsafe { device.create_shader_module(&create_info, None)? })
 }
 
+/// Loads the pipeline cache from a file or creates a new empty cache if the file could not be read
 fn load_cache(device: &ash::Device) -> VkResult<vk::PipelineCache> {
     let path = DIRS.project.cache_dir().join("pipeline_cache");
     if let Ok(data) = fs::read(&path) {

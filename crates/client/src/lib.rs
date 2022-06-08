@@ -27,6 +27,7 @@ pub fn start() -> ! {
     let rendering_engine = create_rendering_engine(&window, &CONFIG.read().graphics);
     let mut game = Game::new(rendering_engine);
     info!("Initialization finished");
+
     let mut time = Instant::now();
     event_loop.run(move |event, _, control_flow| {
         *control_flow = ControlFlow::Poll;

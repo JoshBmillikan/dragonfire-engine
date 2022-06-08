@@ -7,4 +7,5 @@ edition = "2021"
 
 [dependencies]
 engine = { path = "../engine" }
+log = "0.4.17"
 tokio = { version = "1.19.1", features = ["full"] }
