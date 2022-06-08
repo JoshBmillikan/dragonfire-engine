@@ -1,3 +1,4 @@
+[![Rust](https://github.com/JoshBmillikan/dragonfire-engine/actions/workflows/rust.yml/badge.svg)](https://github.com/JoshBmillikan/dragonfire-engine/actions/workflows/rust.yml)
 ## Getting started ##
 Compile and run with cargo:
 
