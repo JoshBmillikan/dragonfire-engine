@@ -14,3 +14,4 @@ uom = { version = "0.32.0", features = ["use_serde"] }
 serde = { version = "1.0.137", features = ["derive"] }
 smallvec = { version = "1.8.0", features = ["union", "serde", "const_generics", "const_new", "write"] }
 directories = "4.0.1"
+shipyard = "0.5.0"
