@@ -1,22 +1,20 @@
 use std::error::Error;
+use std::fmt::{Debug, Formatter};
 use std::marker::PhantomData;
 use std::ops::{Deref, DerefMut};
+use std::sync::Arc;
 
 use ash::prelude::VkResult;
 use ash::vk;
 use ash::vk::DeviceSize;
-use log::warn;
-use once_cell::sync::OnceCell;
 use vk_mem::{Allocator, AllocatorCreateInfo};
-
-static mut ALLOCATOR: OnceCell<Allocator> = OnceCell::new();
 
 pub(super) fn create_allocator(
     entry: &ash::Entry,
     instance: &ash::Instance,
     physical_device: vk::PhysicalDevice,
     device: &ash::Device,
-) -> VkResult<()> {
+) -> VkResult<Arc<Allocator>> {
     let create_info = AllocatorCreateInfo {
         entry: entry.clone(),
         physical_device,
@@ -28,23 +26,8 @@ pub(super) fn create_allocator(
         allocation_callbacks: None,
         vulkan_api_version: vk::API_VERSION_1_3,
     };
-    unsafe {
-        let alloc = Allocator::new(&create_info)?;
-        ALLOCATOR.get_or_init(|| alloc);
-    }
-    Ok(())
-}
 
-/// Destroys the global allocator object
-///
-/// # Safety
-/// Mutates a global variable
-pub(super) unsafe fn destroy_allocator() {
-    if let Some(mut alloc) = ALLOCATOR.take() {
-        alloc.destroy();
-    } else {
-        warn!("Attempted to destroy allocator, but it was not initialized");
-    }
+    unsafe { Allocator::new(&create_info).map(Arc::new) }
 }
 
 #[derive(Debug, Clone)]
@@ -56,9 +39,9 @@ struct AllocData {
 unsafe impl Send for AllocData {}
 unsafe impl Sync for AllocData {}
 
-#[derive(Debug)]
 pub struct Buffer {
     allocation: AllocData,
+    allocator: Arc<Allocator>,
     buffer: vk::Buffer,
 }
 
@@ -66,18 +49,17 @@ impl Buffer {
     pub unsafe fn new(
         create_info: &vk::BufferCreateInfo,
         alloc_info: &vk_mem::AllocationCreateInfo,
+        allocator: Arc<Allocator>,
     ) -> Result<Buffer, Box<dyn Error>> {
-        let (buffer, allocation, info) = ALLOCATOR
-            .get()
-            .ok_or("Allocator not initialized")?
-            .create_buffer(create_info, alloc_info)?;
+        let (buffer, allocation, info) = allocator.create_buffer(create_info, alloc_info)?;
 
         Ok(Buffer {
             allocation: AllocData { allocation, info },
-            buffer
+            allocator,
+            buffer,
         })
     }
-    
+
     pub fn get_info(&self) -> &vk_mem::AllocationInfo {
         &self.allocation.info
     }
@@ -97,12 +79,19 @@ impl DerefMut for Buffer {
     }
 }
 
+impl Debug for Buffer {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("buffer")
+            .field("buffer", &self.buffer)
+            .field("allocation", &self.allocation)
+            .finish_non_exhaustive()
+    }
+}
+
 impl Drop for Buffer {
     fn drop(&mut self) {
         unsafe {
-            ALLOCATOR
-                .get()
-                .expect("Allocator not initialized")
+            self.allocator
                 .destroy_buffer(self.buffer, self.allocation.allocation);
         }
     }
@@ -115,7 +104,10 @@ pub struct GpuObject<T: Sized> {
 }
 
 impl<T> GpuObject<T> {
-    pub fn new(usage: vk::BufferUsageFlags) -> Result<Self, Box<dyn Error>>{
+    pub fn new(
+        allocator: Arc<Allocator>,
+        usage: vk::BufferUsageFlags,
+    ) -> Result<Self, Box<dyn Error>> {
         let create_info = vk::BufferCreateInfo::builder()
             .size(std::mem::size_of::<T>() as DeviceSize)
             .sharing_mode(vk::SharingMode::EXCLUSIVE)
@@ -123,13 +115,14 @@ impl<T> GpuObject<T> {
         let alloc_info = vk_mem::AllocationCreateInfo {
             usage: vk_mem::MemoryUsage::CpuToGpu,
             flags: vk_mem::AllocationCreateFlags::MAPPED,
-            required_flags: vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
+            required_flags: vk::MemoryPropertyFlags::HOST_VISIBLE
+                | vk::MemoryPropertyFlags::HOST_COHERENT,
             ..Default::default()
         };
-        let buffer = unsafe {Buffer::new(&create_info, &alloc_info)?};
+        let buffer = unsafe { Buffer::new(&create_info, &alloc_info, allocator)? };
         Ok(GpuObject {
             buffer,
-            _spooky: Default::default()
+            _spooky: Default::default(),
         })
     }
 }

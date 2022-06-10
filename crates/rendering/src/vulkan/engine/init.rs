@@ -12,6 +12,7 @@ use itertools::Itertools;
 use log::{info, warn};
 use raw_window_handle::HasRawWindowHandle;
 use smallvec::SmallVec;
+use vk_mem::Allocator;
 
 use crate::vulkan::engine::alloc::{create_allocator, GpuObject};
 use crate::vulkan::engine::{
@@ -45,7 +46,7 @@ impl Engine {
         let queue_families =
             get_queue_families(&instance, physical_device, surface, &surface_loader)?;
         let device = create_device(&instance, physical_device, &extensions, &queue_families)?;
-        create_allocator(&entry, &instance, physical_device, &device)?;
+        let allocator = create_allocator(&entry, &instance, physical_device, &device)?;
         let graphics_queue = device.get_device_queue(queue_families[0], 0);
         let presentation_queue = device.get_device_queue(queue_families[1], 0);
         let surface_format = get_surface_format(physical_device, surface, &surface_loader)?;
@@ -73,7 +74,7 @@ impl Engine {
         );
         info!("Using {thread_count} render threads");
         let frames = (0..FRAMES_IN_FLIGHT)
-            .map(|_| create_frame(&device, queue_families[0], thread_count))
+            .map(|_| create_frame(&device, queue_families[0], thread_count, &allocator))
             .collect::<Result<SmallVec<[_; FRAMES_IN_FLIGHT]>, Box<dyn Error>>>()?;
 
         let render_barrier = Arc::new(Barrier::new(thread_count + 1));
@@ -116,13 +117,13 @@ impl Engine {
             debug_messenger,
             surface,
             graphics_queue,
-            presentation_queue,
             surface_format,
             swapchain,
             swapchain_loader,
             swapchain_extent,
             swapchain_images,
             swapchain_views,
+            allocator,
             frames: frames.into_inner().unwrap(),
             render_channels,
             render_thread_handles,
@@ -182,13 +183,11 @@ unsafe fn create_instance(
     ];
     let layers = layers
         .iter()
-        .map(|layer| {
-            info!("Loaded layer {:?}", layer);
-            layer.as_ptr()
-        })
-        .collect::<Vec<_>>();
+        .inspect(|layer| info!("Loaded layer {:?}", layer))
+        .map(|layer| layer.as_ptr())
+        .collect_vec();
 
-    let app_name = CString::new(std::option_env!("APP_NAME").unwrap_or("test")).unwrap();
+    let app_name = CString::new(option_env!("APP_NAME").unwrap_or("test")).unwrap();
     let app_info = vk::ApplicationInfo::builder()
         .engine_name(engine_name.as_c_str())
         .api_version(vk::API_VERSION_1_3)
@@ -262,7 +261,7 @@ unsafe fn get_physical_device(
     Ok(device)
 }
 
-/// Tests if a physical device is valid for our requirements
+/// Tests if a physical device is valid for our required features and extensions
 unsafe fn is_valid_device(
     device: vk::PhysicalDevice,
     instance: &ash::Instance,
@@ -335,8 +334,9 @@ unsafe fn create_device(
 ) -> VkResult<Arc<ash::Device>> {
     let extensions = extensions
         .iter()
+        .inspect(|ext| info!("Loaded device extension {ext:?}"))
         .map(|ext| ext.as_ptr())
-        .collect::<Vec<_>>();
+        .collect_vec();
     let queue_priority = [1.];
     let queue_info = queue_families
         .iter()
@@ -349,10 +349,6 @@ unsafe fn create_device(
                 .build()
         })
         .collect::<SmallVec<[_; 2]>>();
-
-    for ext in &extensions {
-        info!("Loaded device extension {:?}", CStr::from_ptr(*ext));
-    }
 
     let mut features = vk::PhysicalDeviceDynamicRenderingFeatures::builder().dynamic_rendering(true);
 
@@ -487,6 +483,7 @@ unsafe fn create_frame(
     device: &ash::Device,
     graphics_index: u32,
     thread_count: usize,
+    allocator: &Arc<Allocator>,
 ) -> Result<Frame, Box<dyn Error>> {
     let create_info = vk::CommandPoolCreateInfo::builder().queue_family_index(graphics_index);
     let primary_pool = device.create_command_pool(&create_info, None)?;
@@ -521,7 +518,7 @@ unsafe fn create_frame(
     let graphics_semaphore = device.create_semaphore(&Default::default(), None)?;
     let present_semaphore = device.create_semaphore(&Default::default(), None)?;
 
-    let ubo = GpuObject::new(vk::BufferUsageFlags::UNIFORM_BUFFER)?;
+    let ubo = GpuObject::new(allocator.clone(), vk::BufferUsageFlags::UNIFORM_BUFFER)?;
 
     Ok(Frame {
         primary_buffer,

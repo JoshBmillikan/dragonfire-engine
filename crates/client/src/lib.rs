@@ -82,6 +82,7 @@ fn init_logging() -> Result<(), fern::InitError> {
         "" => Some(LevelFilter::Info),
         _ => None,
     };
+
     let colors = ColoredLevelConfig::new()
         .info(Color::Green)
         .warn(Color::Yellow)

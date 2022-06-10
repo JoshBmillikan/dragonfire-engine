@@ -10,13 +10,13 @@ use std::thread::JoinHandle;
 use ash::vk;
 use ash::vk::DependencyFlags;
 use crossbeam_channel::{Receiver, Sender};
-use log::{error, info, log, Level, warn};
+use log::{error, info, log, warn, Level};
 use nalgebra::{Matrix4, Perspective3, Transform3};
 use obj::{load_obj, Obj};
-use parking_lot::{Condvar, Mutex};
 use smallvec::SmallVec;
+use vk_mem::Allocator;
 
-use crate::vulkan::engine::alloc::{destroy_allocator, GpuObject};
+use crate::vulkan::engine::alloc::GpuObject;
 use crate::vulkan::engine::pipeline::{cleanup_cache, create_graphics_pipeline};
 use crate::vulkan::mesh::Vertex;
 use crate::{cull_test, Material, Mesh, RenderingEngine};
@@ -39,13 +39,13 @@ pub struct Engine {
     ),
     surface: vk::SurfaceKHR,
     graphics_queue: vk::Queue,
-    presentation_queue: vk::Queue,
     surface_format: vk::SurfaceFormatKHR,
     swapchain: vk::SwapchainKHR,
     swapchain_loader: Arc<ash::extensions::khr::Swapchain>,
     swapchain_extent: vk::Extent2D,
     swapchain_images: Vec<vk::Image>,
     swapchain_views: Vec<vk::ImageView>,
+    allocator: Arc<Allocator>,
     frames: [Frame; FRAMES_IN_FLIGHT],
     render_channels: SmallVec<[Sender<RenderCommand>; 12]>,
     render_thread_handles: SmallVec<[JoinHandle<()>; 12]>,
@@ -308,8 +308,15 @@ impl RenderingEngine for Engine {
             .command_pool(self.utility_pool)
             .level(vk::CommandBufferLevel::PRIMARY);
         let cmd = unsafe { self.device.allocate_command_buffers(&alloc)? }[0];
-        let mesh =
-            Mesh::new(vertices, indices, &self.device, cmd, self.graphics_queue).map(Arc::new);
+        let mesh = Mesh::new(
+            vertices,
+            indices,
+            &self.device,
+            cmd,
+            self.graphics_queue,
+            self.allocator.clone(),
+        )
+        .map(Arc::new);
         let cmd = [cmd];
         unsafe { self.device.free_command_buffers(self.utility_pool, &cmd) };
         info!("Loaded model {path:?}");
@@ -478,7 +485,14 @@ impl Drop for Engine {
 
             self.swapchain_loader
                 .destroy_swapchain(self.swapchain, None);
-            destroy_allocator();
+
+            if let Some(alloc) = Arc::get_mut(&mut self.allocator) {
+                alloc.destroy();
+            } else {
+                error!("Allocator reference count was > 1 at destruction, this may indicate a memory leak");
+                // TODO use get_unchecked to destroy the allocator anyway once it's stabilized
+                panic!("Allocator destroyed while still in use");
+            }
             cleanup_cache(&self.device);
             self.device.destroy_device(None);
             self.surface_loader.destroy_surface(self.surface, None);
