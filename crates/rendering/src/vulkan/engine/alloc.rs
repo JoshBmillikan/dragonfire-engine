@@ -125,6 +125,10 @@ impl<T> GpuObject<T> {
             _spooky: Default::default(),
         })
     }
+    
+    pub fn get_buffer(&self) -> vk::Buffer {
+        self.buffer.buffer
+    }
 }
 
 impl<T> Deref for GpuObject<T> {

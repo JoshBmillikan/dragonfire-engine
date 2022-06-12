@@ -53,6 +53,7 @@ pub fn start() -> ! {
                 game.tick(delta);
                 time = now;
             }
+
             Event::LoopDestroyed => info!("Shutting down"),
             _ => {}
         }

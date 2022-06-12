@@ -7,7 +7,7 @@ use std::thread::{available_parallelism, spawn};
 
 use ash::prelude::VkResult;
 use ash::vk;
-use ash::vk::PhysicalDeviceType;
+use ash::vk::{DeviceSize, PhysicalDeviceType};
 use itertools::Itertools;
 use log::{info, warn};
 use raw_window_handle::HasRawWindowHandle;
@@ -15,9 +15,7 @@ use smallvec::SmallVec;
 use vk_mem::Allocator;
 
 use crate::vulkan::engine::alloc::{create_allocator, GpuObject};
-use crate::vulkan::engine::{
-    debug_callback, presentation_thread, render_thread, Engine, Frame, FRAMES_IN_FLIGHT,
-};
+use crate::vulkan::engine::{debug_callback, presentation_thread, render_thread, Engine, Frame, FRAMES_IN_FLIGHT, Ubo};
 use crate::GraphicsSettings;
 
 impl Engine {
@@ -66,15 +64,17 @@ impl Engine {
         let swapchain_views =
             create_swapchain_views(&swapchain_images, &device, surface_format.format)?;
 
-        let thread_count = 1.max(
+        let thread_count = 1.max( // half the number of cores, minimum of 1 thread
             available_parallelism()
                 .map(NonZeroUsize::get)
                 .unwrap_or_default()
                 / 2,
         );
         info!("Using {thread_count} render threads");
+        let global_descriptor_layout = create_global_descriptor_layout(&device)?;
+        let descriptor_pool = create_descriptor_pool(&device)?;
         let frames = (0..FRAMES_IN_FLIGHT)
-            .map(|_| create_frame(&device, queue_families[0], thread_count, &allocator))
+            .map(|_| create_frame(&device, queue_families[0], thread_count, &allocator, global_descriptor_layout, descriptor_pool))
             .collect::<Result<SmallVec<[_; FRAMES_IN_FLIGHT]>, Box<dyn Error>>>()?;
 
         let render_barrier = Arc::new(Barrier::new(thread_count + 1));
@@ -135,6 +135,8 @@ impl Engine {
             current_thread: 0,
             current_image_index: 0,
             utility_pool,
+            global_descriptor_layout,
+            descriptor_pool,
         })
     }
 }
@@ -484,6 +486,8 @@ unsafe fn create_frame(
     graphics_index: u32,
     thread_count: usize,
     allocator: &Arc<Allocator>,
+    global_descriptor_layout: vk::DescriptorSetLayout,
+    descriptor_pool: vk::DescriptorPool,
 ) -> Result<Frame, Box<dyn Error>> {
     let create_info = vk::CommandPoolCreateInfo::builder().queue_family_index(graphics_index);
     let primary_pool = device.create_command_pool(&create_info, None)?;
@@ -518,7 +522,21 @@ unsafe fn create_frame(
     let graphics_semaphore = device.create_semaphore(&Default::default(), None)?;
     let present_semaphore = device.create_semaphore(&Default::default(), None)?;
 
-    let ubo = GpuObject::new(allocator.clone(), vk::BufferUsageFlags::UNIFORM_BUFFER)?;
+    let ubo: GpuObject<Ubo> = GpuObject::new(allocator.clone(), vk::BufferUsageFlags::UNIFORM_BUFFER)?;
+    let global_descriptor = create_global_descriptor_set(device, global_descriptor_layout, descriptor_pool)?;
+    let buf_info = [vk::DescriptorBufferInfo::builder()
+        .buffer(ubo.get_buffer())
+        .offset(0)
+        .range(std::mem::size_of::<Ubo>() as DeviceSize)
+        .build()];
+    let write = [vk::WriteDescriptorSet::builder()
+        .dst_set(global_descriptor)
+        .dst_binding(0)
+        .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
+        .buffer_info(&buf_info)
+        .build()];
+
+    device.update_descriptor_sets(&write, &[]);
 
     Ok(Frame {
         primary_buffer,
@@ -529,7 +547,39 @@ unsafe fn create_frame(
         graphics_semaphore,
         present_semaphore,
         ubo: ManuallyDrop::new(ubo),
+        global_descriptor,
     })
+}
+
+unsafe fn create_global_descriptor_layout(device: &ash::Device) -> VkResult<vk::DescriptorSetLayout> {
+    let bindings = [vk::DescriptorSetLayoutBinding::builder()
+        .binding(0)
+        .descriptor_count(1)
+        .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
+        .stage_flags(vk::ShaderStageFlags::VERTEX)
+        .build()];
+    let layout_info = vk::DescriptorSetLayoutCreateInfo::builder()
+        .bindings(&bindings);
+    device.create_descriptor_set_layout(&layout_info, None)
+}
+
+unsafe fn create_global_descriptor_set(device: &ash::Device, layout: vk::DescriptorSetLayout, pool: vk::DescriptorPool) -> VkResult<vk::DescriptorSet> {
+    let layouts = [layout];
+    let alloc_info = vk::DescriptorSetAllocateInfo::builder()
+        .descriptor_pool(pool)
+        .set_layouts(&layouts);
+
+    device.allocate_descriptor_sets(&alloc_info).map(|it| it[0])
+}
+
+unsafe fn create_descriptor_pool(device: &ash::Device) -> VkResult<vk::DescriptorPool> {
+    let sizes = [vk::DescriptorPoolSize::builder()
+        .descriptor_count(1)
+        .ty(vk::DescriptorType::UNIFORM_BUFFER).build()];
+    let create_info = vk::DescriptorPoolCreateInfo::builder()
+        .max_sets(16)
+        .pool_sizes(&sizes);
+    device.create_descriptor_pool(&create_info, None)
 }
 
 /// loads the debug messenger functions and handle object.

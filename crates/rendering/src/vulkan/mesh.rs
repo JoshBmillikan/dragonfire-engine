@@ -5,6 +5,7 @@ use std::sync::Arc;
 use ash::vk;
 use ash::vk::DeviceSize;
 use log::trace;
+use memoffset::offset_of;
 use vk_mem::Allocator;
 
 use crate::vulkan::engine::alloc::Buffer;
@@ -118,5 +119,35 @@ impl Mesh {
     #[inline]
     pub(super) fn get_index_count(&self) -> u32 {
         self.indices.len() as u32
+    }
+}
+
+impl Vertex {
+    pub(crate) fn get_vertex_description() -> (Vec<vk::VertexInputBindingDescription>, Vec<vk::VertexInputAttributeDescription>) {
+        let input = vec![
+            vk::VertexInputBindingDescription::builder()
+                .binding(0)
+                .stride(std::mem::size_of::<Vertex>() as u32)
+                .input_rate(vk::VertexInputRate::VERTEX)
+                .build()
+        ];
+
+        let attributes = vec! [
+            vk::VertexInputAttributeDescription::builder()
+                .binding(0)
+                .location(0)
+                .format(vk::Format::R32G32B32_SFLOAT)
+                .offset(offset_of!(Vertex, position) as u32)
+                .build(),
+
+            vk::VertexInputAttributeDescription::builder()
+                .binding(0)
+                .location(1)
+                .format(vk::Format::R32G32B32_SFLOAT)
+                .offset(offset_of!(Vertex, normal) as u32)
+                .build()
+        ];
+
+        (input, attributes)
     }
 }

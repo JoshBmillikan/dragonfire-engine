@@ -1,5 +1,6 @@
 use std::error::Error;
 use std::ffi::CStr;
+use std::fs;
 use std::fs::File;
 use std::io::BufReader;
 use std::mem::ManuallyDrop;
@@ -16,8 +17,10 @@ use obj::{load_obj, Obj};
 use smallvec::SmallVec;
 use vk_mem::Allocator;
 
+use engine::filesystem::DIRS;
+
 use crate::vulkan::engine::alloc::GpuObject;
-use crate::vulkan::engine::pipeline::{cleanup_cache, create_graphics_pipeline};
+use crate::vulkan::engine::pipeline::{cleanup_cache, create_pipeline};
 use crate::vulkan::mesh::Vertex;
 use crate::{cull_test, Material, Mesh, RenderingEngine};
 
@@ -57,6 +60,8 @@ pub struct Engine {
     current_thread: usize,
     current_image_index: u32,
     utility_pool: vk::CommandPool,
+    global_descriptor_layout: vk::DescriptorSetLayout,
+    descriptor_pool: vk::DescriptorPool,
 }
 
 #[derive(Debug)]
@@ -69,6 +74,7 @@ struct Frame {
     graphics_semaphore: vk::Semaphore,
     present_semaphore: vk::Semaphore,
     ubo: ManuallyDrop<GpuObject<Ubo>>,
+    global_descriptor: vk::DescriptorSet,
 }
 
 #[derive(Debug)]
@@ -78,7 +84,7 @@ struct Ubo {
 }
 
 enum RenderCommand {
-    Begin(vk::CommandBuffer, Matrix4<f32>, Perspective3<f32>),
+    Begin(vk::CommandBuffer, Matrix4<f32>, Perspective3<f32>, vk::DescriptorSet),
     Render(Arc<Mesh>, Arc<Material>, Matrix4<f32>),
     End,
 }
@@ -197,6 +203,7 @@ impl RenderingEngine for Engine {
                         frame.secondary_buffers[index],
                         *view,
                         *projection,
+                        frame.global_descriptor
                     ))
                     .unwrap();
             }
@@ -324,11 +331,20 @@ impl RenderingEngine for Engine {
     }
 
     fn load_material(&mut self) -> Result<Arc<Material>, Box<dyn Error>> {
-        let (pipeline, layout) = create_graphics_pipeline(
+        let shaders = DIRS.asset.join("shaders");
+        let data = vec![
+            fs::read(shaders.join("base.vert.spv"))?,
+            fs::read(shaders.join("base.frag.spv"))?,
+        ];
+
+        let (pipeline, layout) = create_pipeline(
             &self.device,
             self.surface_format.format,
             self.swapchain_extent,
+            data,
+            self.global_descriptor_layout
         )?;
+
         info!("Created graphics pipeline");
         Ok(Arc::new(Material {
             pipeline,
@@ -351,13 +367,15 @@ fn render_thread(receiver: Receiver<RenderCommand>, device: &ash::Device, barrie
     let mut last_material = std::ptr::null();
     let mut view = Default::default();
     let mut projection = Perspective3::from_matrix_unchecked(Default::default());
+    let mut global_descriptors = [vk::DescriptorSet::null()];
     while let Ok(command) = receiver.recv() {
         match command {
             // initialize some per frame data for this thread
-            RenderCommand::Begin(cmd_buf, view_matrix, proj) => {
+            RenderCommand::Begin(cmd_buf, view_matrix, proj, desc) => {
                 cmd = cmd_buf;
                 view = view_matrix;
                 projection = proj;
+                global_descriptors[0] = desc;
             }
 
             // record the rendering commands
@@ -369,26 +387,34 @@ fn render_thread(receiver: Receiver<RenderCommand>, device: &ash::Device, barrie
                 unsafe {
                     if !std::ptr::eq(mesh.as_ref(), last_mesh) {
                         last_mesh = mesh.as_ref();
-                        // mesh.bind(device, cmd);
+                        mesh.bind(device, cmd);
                     }
+
                     if !std::ptr::eq(material.as_ref(), last_material) {
                         last_material = material.as_ref();
                         material.bind(device, cmd);
+                        device.cmd_bind_descriptor_sets(
+                            cmd,
+                            vk::PipelineBindPoint::GRAPHICS,
+                            material.get_pipeline_layout(),
+                            0,
+                            &global_descriptors,
+                            &[],
+                        );
                     }
 
-                    // device.cmd_push_constants(
-                    //     cmd,
-                    //     material.get_pipeline_layout(),
-                    //     vk::ShaderStageFlags::VERTEX,
-                    //     0,
-                    //     std::slice::from_raw_parts(
-                    //         transform.as_ptr() as *const u8,
-                    //         std::mem::size_of::<Transform3<f32>>(),
-                    //     ),
-                    // );
+                    device.cmd_push_constants(
+                        cmd,
+                        material.get_pipeline_layout(),
+                        vk::ShaderStageFlags::VERTEX,
+                        0,
+                        std::slice::from_raw_parts(
+                            transform.as_ptr() as *const u8,
+                            std::mem::size_of::<Matrix4<f32>>(),
+                        ),
+                    );
 
-                    //device.cmd_draw_indexed(cmd, mesh.get_index_count(), 1, 0, 0, 0);
-                    device.cmd_draw(cmd, 3, 1, 0, 0);
+                    device.cmd_draw_indexed(cmd, mesh.get_index_count(), 1, 0, 0, 0);
                 }
             }
 
@@ -419,7 +445,6 @@ fn presentation_thread(
     presentation_queue: vk::Queue,
 ) {
     while let Ok(data) = receiver.recv() {
-        //let _lock = data.mutex.lock();
         let submit_info = [vk::SubmitInfo::builder()
             .command_buffers(&[data.cmd])
             .wait_semaphores(&[data.present_semaphore])
@@ -478,6 +503,8 @@ impl Drop for Engine {
                 self.device.destroy_fence(frame.fence, None);
                 ManuallyDrop::drop(&mut frame.ubo);
             }
+            self.device.destroy_descriptor_pool(self.descriptor_pool, None);
+            self.device.destroy_descriptor_set_layout(self.global_descriptor_layout, None);
 
             for view in &self.swapchain_views {
                 self.device.destroy_image_view(*view, None);
