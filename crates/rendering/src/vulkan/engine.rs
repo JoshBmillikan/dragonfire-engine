@@ -183,7 +183,7 @@ impl RenderingEngine for Engine {
                 .load_op(vk::AttachmentLoadOp::CLEAR)
                 .store_op(vk::AttachmentStoreOp::STORE)
                 .clear_value(vk::ClearValue {
-                    color: vk::ClearColorValue { float32: [1.; 4] },
+                    color: vk::ClearColorValue { float32: [0., 0., 0., 1.] },
                 })
                 .build()];
 
