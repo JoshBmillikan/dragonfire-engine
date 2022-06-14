@@ -352,6 +352,10 @@ impl RenderingEngine for Engine {
             device: self.device.clone(),
         }))
     }
+
+    fn wait(&self) {
+        unsafe{self.device.device_wait_idle().unwrap()};
+    }
 }
 
 /// This function runs in worker threads and records rendering commands to secondary command buffers

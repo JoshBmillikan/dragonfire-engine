@@ -54,7 +54,10 @@ pub fn start() -> ! {
                 time = now;
             }
 
-            Event::LoopDestroyed => info!("Shutting down"),
+            Event::LoopDestroyed => {
+                info!("Shutting down");
+                game.rendering_engine.wait();
+            }
             _ => {}
         }
     });
