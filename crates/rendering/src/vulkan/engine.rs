@@ -14,6 +14,7 @@ use crossbeam_channel::{Receiver, Sender};
 use log::{error, info, log, warn, Level};
 use nalgebra::{Matrix4, Perspective3, Transform3};
 use obj::{load_obj, Obj};
+use once_cell::sync::Lazy;
 use smallvec::SmallVec;
 use vk_mem::Allocator;
 
@@ -84,7 +85,12 @@ struct Ubo {
 }
 
 enum RenderCommand {
-    Begin(vk::CommandBuffer, Matrix4<f32>, Perspective3<f32>, vk::DescriptorSet),
+    Begin(
+        vk::CommandBuffer,
+        Matrix4<f32>,
+        Perspective3<f32>,
+        vk::DescriptorSet,
+    ),
     Render(Arc<Mesh>, Arc<Material>, Matrix4<f32>),
     End,
 }
@@ -99,8 +105,19 @@ struct PresentData {
     signal_fence: vk::Fence,
 }
 
+#[rustfmt::skip]
+static COORDINATE_CORRECTION: Lazy<Matrix4<f32>> = Lazy::new(|| {
+    Matrix4::from_row_slice(&[
+        1f32, 0f32, 0f32, 0f32,
+        0f32, -1f32, 0f32, 0f32,
+        0f32, 0f32, 0.5f32, 0.5f32,
+        0f32, 0f32, 0f32, 1f32,
+    ])
+});
+
 impl RenderingEngine for Engine {
     fn begin_rendering(&mut self, view: &Matrix4<f32>, projection: &Perspective3<f32>) {
+        let proj = *COORDINATE_CORRECTION * projection.to_homogeneous();
         let frame = &mut self.frames[self.frame_count as usize % FRAMES_IN_FLIGHT];
         let fences = [frame.fence];
         unsafe {
@@ -122,7 +139,7 @@ impl RenderingEngine for Engine {
             }
             self.current_image_index = index;
             frame.ubo.view = *view;
-            frame.ubo.projection = projection.to_homogeneous();
+            frame.ubo.projection = proj;
             self.device
                 .reset_command_pool(frame.primary_pool, vk::CommandPoolResetFlags::empty())
                 .unwrap();
@@ -183,7 +200,9 @@ impl RenderingEngine for Engine {
                 .load_op(vk::AttachmentLoadOp::CLEAR)
                 .store_op(vk::AttachmentStoreOp::STORE)
                 .clear_value(vk::ClearValue {
-                    color: vk::ClearColorValue { float32: [0., 0., 0., 1.] },
+                    color: vk::ClearColorValue {
+                        float32: [0., 0., 0., 1.],
+                    },
                 })
                 .build()];
 
@@ -203,7 +222,7 @@ impl RenderingEngine for Engine {
                         frame.secondary_buffers[index],
                         *view,
                         *projection,
-                        frame.global_descriptor
+                        frame.global_descriptor,
                     ))
                     .unwrap();
             }
@@ -342,7 +361,7 @@ impl RenderingEngine for Engine {
             self.surface_format.format,
             self.swapchain_extent,
             data,
-            self.global_descriptor_layout
+            self.global_descriptor_layout,
         )?;
 
         info!("Created graphics pipeline");
@@ -354,7 +373,7 @@ impl RenderingEngine for Engine {
     }
 
     fn wait(&self) {
-        unsafe{self.device.device_wait_idle().unwrap()};
+        unsafe { self.device.device_wait_idle().unwrap() };
     }
 }
 
@@ -507,8 +526,10 @@ impl Drop for Engine {
                 self.device.destroy_fence(frame.fence, None);
                 ManuallyDrop::drop(&mut frame.ubo);
             }
-            self.device.destroy_descriptor_pool(self.descriptor_pool, None);
-            self.device.destroy_descriptor_set_layout(self.global_descriptor_layout, None);
+            self.device
+                .destroy_descriptor_pool(self.descriptor_pool, None);
+            self.device
+                .destroy_descriptor_set_layout(self.global_descriptor_layout, None);
 
             for view in &self.swapchain_views {
                 self.device.destroy_image_view(*view, None);

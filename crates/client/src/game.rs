@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::time::Instant;
 use log::info;
 
-use nalgebra::{Isometry3, Matrix4};
+use nalgebra::{Isometry3, Point3, Vector3};
 use uom::si::f64::Time;
 use uom::si::time::second;
 use winit::event::{Event, WindowEvent};
@@ -24,12 +24,18 @@ pub struct Game<R: RenderingEngine> {
 
 impl<R: RenderingEngine> Game<R> {
     pub fn new(mut rendering_engine: Box<R>, window: Window) -> Game<R> {
-        let camera = Camera::new(&CONFIG.read().graphics);
+        let mut camera = Camera::new(&CONFIG.read().graphics);
         let path = PathBuf::from("./model.obj");
         let mesh = rendering_engine.load_model(&path).unwrap();
         let material = rendering_engine.load_material().unwrap();
         let mut world = World::new();
-        let _entity = world.add_entity((mesh, material, Isometry3::<f32>::default()));
+        let mut iso = Isometry3::<f32>::default();
+        iso.translation.x += 1.;
+        let eye = Point3::new(0.0, 0.0, 0.0);
+        let up = Vector3::new(0., -1., 0.);
+        let target = Point3::from(iso.translation.vector);
+        camera.view = Isometry3::look_at_rh(&eye, &target,&up);
+        let _entity = world.add_entity((mesh, material, iso));
         Game {
             world,
             camera,
@@ -73,7 +79,7 @@ impl<R: RenderingEngine> Game<R> {
     }
 
     fn tick(&mut self, delta: Time) {
-        self.rendering_engine.begin_rendering(&self.camera.view, &self.camera.projection);
+        self.rendering_engine.begin_rendering(&self.camera.view.to_homogeneous(), &self.camera.projection);
 
         self.world
             .run(

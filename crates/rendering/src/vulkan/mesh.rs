@@ -12,12 +12,13 @@ use crate::vulkan::engine::alloc::Buffer;
 
 pub struct Mesh {
     indices: Vec<u32>,
-    _vertices: Vec<Vertex>,
+    pub vertices: Vec<Vertex>,
     vertex_buffer: Buffer,
     index_buffer: Buffer,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq)]
+#[repr(C)]
 pub struct Vertex {
     pub position: nalgebra::Vector3<f32>,
     pub normal: nalgebra::UnitVector3<f32>,
@@ -85,7 +86,7 @@ impl Mesh {
             }];
             device.cmd_copy_buffer(cmd, *staging_buf, *vertex_buffer, &cpy);
             let cpy = [vk::BufferCopy {
-                src_offset: 0,
+                src_offset: vertex_size as DeviceSize,
                 dst_offset: 0,
                 size: index_size as DeviceSize,
             }];
@@ -103,7 +104,7 @@ impl Mesh {
             );
             Ok(Mesh {
                 indices,
-                _vertices: vertices,
+                vertices,
                 vertex_buffer,
                 index_buffer,
             })

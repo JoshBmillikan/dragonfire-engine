@@ -2,10 +2,9 @@ use std::error::Error;
 use std::path::Path;
 use std::sync::Arc;
 
-use nalgebra::{Matrix4, Perspective3, Transform3};
+use nalgebra::{Isometry3, Matrix4, Perspective3};
 use raw_window_handle::HasRawWindowHandle;
 use serde::{Deserialize, Serialize};
-use uom::num_traits::real::Real;
 use uom::si::angle::degree;
 use uom::si::f32::Angle;
 
@@ -22,7 +21,7 @@ pub type Material = vulkan::material::Material;
 pub type Mesh = vulkan::mesh::Mesh;
 
 pub trait RenderingEngine {
-    fn begin_rendering(&mut self, view: &Matrix4<f32>, projection: &nalgebra::Perspective3<f32>);
+    fn begin_rendering(&mut self, view: &Matrix4<f32>, projection: &Perspective3<f32>);
     fn render(&mut self, mesh: &Arc<Mesh>, material: &Arc<Material>, transform: Matrix4<f32>);
     fn end_rendering(&mut self);
     fn resize(&mut self, width: u32, height: u32);
@@ -38,7 +37,7 @@ pub struct GraphicsSettings {
 }
 
 pub struct Camera {
-    pub view: Matrix4<f32>,
+    pub view: Isometry3<f32>,
     pub projection: Perspective3<f32>,
 }
 
@@ -46,9 +45,10 @@ impl Camera {
     pub fn new(settings: &GraphicsSettings) -> Self {
         let projection = Perspective3::new(
             settings.resolution[0] as f32 / settings.resolution[1] as f32,
-            settings.fov.value,
+            //settings.fov.value,
+            0.785398f32,
             0.1,
-            100.,
+            1000.,
         );
         Camera {
             view: Default::default(),

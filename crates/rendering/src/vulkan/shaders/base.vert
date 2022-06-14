@@ -14,8 +14,9 @@ layout (push_constant) uniform constants {
 
 layout(location = 0) out vec3 frag_color;
 
+
 void main() {
-    mat4 transform = (ubo_data.projection * ubo_data.view) * push_constants.model;
+    mat4 transform = ubo_data.projection * ubo_data.view * push_constants.model;
     gl_Position = transform * vec4(position, 1.0);
-    frag_color = vec3(1.0);
+    frag_color = vec3(1.0,0.0,0.0);
 }
