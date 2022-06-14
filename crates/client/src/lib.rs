@@ -1,17 +1,13 @@
 use std::error::Error;
-use std::time::Instant;
 
 use fern::colors::{Color, ColoredLevelConfig};
 use log::{info, LevelFilter};
-use uom::si::f64::Time;
-use uom::si::time::second;
 use winit::dpi::LogicalSize;
-use winit::event::{Event, WindowEvent};
-use winit::event_loop::{ControlFlow, EventLoop};
+use winit::event_loop::EventLoop;
 use winit::window::{Window, WindowBuilder};
 
 use engine::filesystem::DIRS;
-use rendering::{create_rendering_engine, RenderingEngine};
+use rendering::{create_rendering_engine};
 
 use crate::config::CONFIG;
 use crate::game::Game;
@@ -25,42 +21,10 @@ pub fn start() -> ! {
     let event_loop = EventLoop::new();
     let window = create_window(&event_loop).expect("Failed to create window");
     let rendering_engine = create_rendering_engine(&window, &CONFIG.read().graphics);
-    let mut game = Game::new(rendering_engine);
+    let mut game = Game::new(rendering_engine, window);
     info!("Initialization finished");
 
-    let mut time = Instant::now();
-    event_loop.run(move |event, _, control_flow| {
-        *control_flow = ControlFlow::Poll;
-        match event {
-            Event::WindowEvent {
-                event: WindowEvent::CloseRequested,
-                window_id,
-            } if window.id() == window_id => *control_flow = ControlFlow::Exit,
-
-            Event::WindowEvent {
-                event: WindowEvent::Resized(size),
-                window_id,
-            } if window.id() == window_id => game.rendering_engine.resize(size.width, size.height),
-
-            Event::DeviceEvent { .. } => {}
-            Event::UserEvent(_) => {}
-            Event::Suspended => {}
-            Event::Resumed => {}
-
-            Event::MainEventsCleared => {
-                let now = Instant::now();
-                let delta = Time::new::<second>((now - time).as_secs_f64());
-                game.tick(delta);
-                time = now;
-            }
-
-            Event::LoopDestroyed => {
-                info!("Shutting down");
-                game.rendering_engine.wait();
-            }
-            _ => {}
-        }
-    });
+    event_loop.run(move |event, _, control_flow| game.main_loop(event, control_flow));
 }
 
 fn create_window<T>(events: &EventLoop<T>) -> Result<Window, Box<dyn Error>> {

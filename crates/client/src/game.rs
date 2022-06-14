@@ -1,8 +1,14 @@
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Instant;
+use log::info;
 
 use nalgebra::{Isometry3, Matrix4};
 use uom::si::f64::Time;
+use uom::si::time::second;
+use winit::event::{Event, WindowEvent};
+use winit::event_loop::ControlFlow;
+use winit::window::Window;
 
 use engine::ecs::{IntoIter, View, World};
 use rendering::{Camera, Material, Mesh, RenderingEngine};
@@ -11,11 +17,13 @@ use crate::CONFIG;
 pub struct Game<R: RenderingEngine> {
     world: World,
     camera: Camera,
-    pub rendering_engine: Box<R>,
+    rendering_engine: Box<R>,
+    time: Instant,
+    window: Window
 }
 
 impl<R: RenderingEngine> Game<R> {
-    pub fn new(mut rendering_engine: Box<R>) -> Game<R> {
+    pub fn new(mut rendering_engine: Box<R>, window: Window) -> Game<R> {
         let camera = Camera::new(&CONFIG.read().graphics);
         let path = PathBuf::from("./model.obj");
         let mesh = rendering_engine.load_model(&path).unwrap();
@@ -26,10 +34,45 @@ impl<R: RenderingEngine> Game<R> {
             world,
             camera,
             rendering_engine,
+            time: Instant::now(),
+            window
         }
     }
 
-    pub fn tick(&mut self, delta: Time) {
+    pub fn main_loop(&mut self, event: Event<()>, control_flow: &mut ControlFlow) {
+        *control_flow = ControlFlow::Poll;
+        match event {
+            Event::WindowEvent {
+                event: WindowEvent::CloseRequested,
+                window_id,
+            } if self.window.id() == window_id => *control_flow = ControlFlow::Exit,
+
+            Event::WindowEvent {
+                event: WindowEvent::Resized(size),
+                window_id,
+            } if self.window.id() == window_id => self.rendering_engine.resize(size.width, size.height),
+
+            Event::DeviceEvent { .. } => {}
+            Event::UserEvent(_) => {}
+            Event::Suspended => {}
+            Event::Resumed => {}
+
+            Event::MainEventsCleared => {
+                let now = Instant::now();
+                let delta = Time::new::<second>((now - self.time).as_secs_f64());
+                self.tick(delta);
+                self.time = now;
+            }
+
+            Event::LoopDestroyed => {
+                info!("Shutting down");
+                self.rendering_engine.wait();
+            }
+            _ => {}
+        }
+    }
+
+    fn tick(&mut self, delta: Time) {
         self.rendering_engine.begin_rendering(&self.camera.view, &self.camera.projection);
 
         self.world
