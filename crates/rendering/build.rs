@@ -12,7 +12,7 @@ fn main() {
 #[cfg(feature = "vulkan")]
 fn compile_glsl() {
     println!("cargo:rerun-if-changed=src/vulkan/shader/glsl");
-    let sources = get_sources("src/vulkan/shader".as_ref()).expect("Failed to read shader paths");
+    let sources = get_sources("src/vulkan/shaders".as_ref()).expect("Failed to read shader paths");
     for file in sources {
         compile_shader(&file);
     }

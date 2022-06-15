@@ -7,15 +7,16 @@ use std::thread::{available_parallelism, spawn};
 
 use ash::prelude::VkResult;
 use ash::vk;
-use ash::vk::PhysicalDeviceType;
+use ash::vk::{DeviceSize, PhysicalDeviceType};
 use itertools::Itertools;
 use log::{info, warn};
 use raw_window_handle::HasRawWindowHandle;
 use smallvec::SmallVec;
+use vk_mem::Allocator;
 
-use crate::vulkan::engine::alloc::{create_allocator, GpuObject};
+use crate::vulkan::engine::alloc::{create_allocator, GpuObject, Image};
 use crate::vulkan::engine::{
-    debug_callback, presentation_thread, render_thread, Engine, Frame, FRAMES_IN_FLIGHT,
+    debug_callback, presentation_thread, render_thread, Engine, Frame, Ubo, FRAMES_IN_FLIGHT,
 };
 use crate::GraphicsSettings;
 
@@ -45,7 +46,7 @@ impl Engine {
         let queue_families =
             get_queue_families(&instance, physical_device, surface, &surface_loader)?;
         let device = create_device(&instance, physical_device, &extensions, &queue_families)?;
-        create_allocator(&entry, &instance, physical_device, &device)?;
+        let allocator = create_allocator(&entry, &instance, physical_device, &device)?;
         let graphics_queue = device.get_device_queue(queue_families[0], 0);
         let presentation_queue = device.get_device_queue(queue_families[1], 0);
         let surface_format = get_surface_format(physical_device, surface, &surface_loader)?;
@@ -66,14 +67,26 @@ impl Engine {
             create_swapchain_views(&swapchain_images, &device, surface_format.format)?;
 
         let thread_count = 1.max(
+            // half the number of cores, minimum of 1 thread
             available_parallelism()
                 .map(NonZeroUsize::get)
                 .unwrap_or_default()
                 / 2,
         );
         info!("Using {thread_count} render threads");
+        let global_descriptor_layout = create_global_descriptor_layout(&device)?;
+        let descriptor_pool = create_descriptor_pool(&device)?;
         let frames = (0..FRAMES_IN_FLIGHT)
-            .map(|_| create_frame(&device, queue_families[0], thread_count))
+            .map(|_| {
+                create_frame(
+                    &device,
+                    queue_families[0],
+                    thread_count,
+                    &allocator,
+                    global_descriptor_layout,
+                    descriptor_pool,
+                )
+            })
             .collect::<Result<SmallVec<[_; FRAMES_IN_FLIGHT]>, Box<dyn Error>>>()?;
 
         let render_barrier = Arc::new(Barrier::new(thread_count + 1));
@@ -105,6 +118,10 @@ impl Engine {
             .flags(vk::CommandPoolCreateFlags::TRANSIENT);
         let utility_pool = device.create_command_pool(&pool_info, None)?;
 
+        let depth_format = get_depth_format(physical_device, &instance, vk::ImageTiling::OPTIMAL)?;
+        let (depth_image, depth_view) =
+            create_depth_image(&device, depth_format, swapchain_extent, allocator.clone())?;
+
         info!("Rendering engine initialization finished");
         Ok(Engine {
             frame_count: 0,
@@ -116,13 +133,13 @@ impl Engine {
             debug_messenger,
             surface,
             graphics_queue,
-            presentation_queue,
             surface_format,
             swapchain,
             swapchain_loader,
             swapchain_extent,
             swapchain_images,
             swapchain_views,
+            allocator,
             frames: frames.into_inner().unwrap(),
             render_channels,
             render_thread_handles,
@@ -134,6 +151,11 @@ impl Engine {
             current_thread: 0,
             current_image_index: 0,
             utility_pool,
+            global_descriptor_layout,
+            descriptor_pool,
+            depth_format,
+            depth_image: ManuallyDrop::new(depth_image),
+            depth_view,
         })
     }
 }
@@ -182,13 +204,11 @@ unsafe fn create_instance(
     ];
     let layers = layers
         .iter()
-        .map(|layer| {
-            info!("Loaded layer {:?}", layer);
-            layer.as_ptr()
-        })
-        .collect::<Vec<_>>();
+        .inspect(|layer| info!("Loaded layer {:?}", layer))
+        .map(|layer| layer.as_ptr())
+        .collect_vec();
 
-    let app_name = CString::new(std::option_env!("APP_NAME").unwrap_or("test")).unwrap();
+    let app_name = CString::new(option_env!("APP_NAME").unwrap_or("test")).unwrap();
     let app_info = vk::ApplicationInfo::builder()
         .engine_name(engine_name.as_c_str())
         .api_version(vk::API_VERSION_1_3)
@@ -262,7 +282,7 @@ unsafe fn get_physical_device(
     Ok(device)
 }
 
-/// Tests if a physical device is valid for our requirements
+/// Tests if a physical device is valid for our required features and extensions
 unsafe fn is_valid_device(
     device: vk::PhysicalDevice,
     instance: &ash::Instance,
@@ -335,8 +355,9 @@ unsafe fn create_device(
 ) -> VkResult<Arc<ash::Device>> {
     let extensions = extensions
         .iter()
+        .inspect(|ext| info!("Loaded device extension {ext:?}"))
         .map(|ext| ext.as_ptr())
-        .collect::<Vec<_>>();
+        .collect_vec();
     let queue_priority = [1.];
     let queue_info = queue_families
         .iter()
@@ -350,11 +371,8 @@ unsafe fn create_device(
         })
         .collect::<SmallVec<[_; 2]>>();
 
-    for ext in &extensions {
-        info!("Loaded device extension {:?}", CStr::from_ptr(*ext));
-    }
-
-    let mut features = vk::PhysicalDeviceDynamicRenderingFeatures::builder().dynamic_rendering(true);
+    let mut features =
+        vk::PhysicalDeviceDynamicRenderingFeatures::builder().dynamic_rendering(true);
 
     let create_info = vk::DeviceCreateInfo::builder()
         .enabled_extension_names(&extensions)
@@ -487,6 +505,9 @@ unsafe fn create_frame(
     device: &ash::Device,
     graphics_index: u32,
     thread_count: usize,
+    allocator: &Arc<Allocator>,
+    global_descriptor_layout: vk::DescriptorSetLayout,
+    descriptor_pool: vk::DescriptorPool,
 ) -> Result<Frame, Box<dyn Error>> {
     let create_info = vk::CommandPoolCreateInfo::builder().queue_family_index(graphics_index);
     let primary_pool = device.create_command_pool(&create_info, None)?;
@@ -515,13 +536,28 @@ unsafe fn create_frame(
         })
         .collect::<VkResult<_>>()?;
 
-    let fence_info = vk::FenceCreateInfo::builder()
-        .flags(vk::FenceCreateFlags::SIGNALED);
+    let fence_info = vk::FenceCreateInfo::builder().flags(vk::FenceCreateFlags::SIGNALED);
     let fence = device.create_fence(&fence_info, None)?;
     let graphics_semaphore = device.create_semaphore(&Default::default(), None)?;
     let present_semaphore = device.create_semaphore(&Default::default(), None)?;
 
-    let ubo = GpuObject::new(vk::BufferUsageFlags::UNIFORM_BUFFER)?;
+    let ubo: GpuObject<Ubo> =
+        GpuObject::new(allocator.clone(), vk::BufferUsageFlags::UNIFORM_BUFFER)?;
+    let global_descriptor =
+        create_global_descriptor_set(device, global_descriptor_layout, descriptor_pool)?;
+    let buf_info = [vk::DescriptorBufferInfo::builder()
+        .buffer(ubo.get_buffer())
+        .offset(0)
+        .range(std::mem::size_of::<Ubo>() as DeviceSize)
+        .build()];
+    let write = [vk::WriteDescriptorSet::builder()
+        .dst_set(global_descriptor)
+        .dst_binding(0)
+        .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
+        .buffer_info(&buf_info)
+        .build()];
+
+    device.update_descriptor_sets(&write, &[]);
 
     Ok(Frame {
         primary_buffer,
@@ -532,7 +568,114 @@ unsafe fn create_frame(
         graphics_semaphore,
         present_semaphore,
         ubo: ManuallyDrop::new(ubo),
+        global_descriptor,
     })
+}
+
+unsafe fn create_global_descriptor_layout(
+    device: &ash::Device,
+) -> VkResult<vk::DescriptorSetLayout> {
+    let bindings = [vk::DescriptorSetLayoutBinding::builder()
+        .binding(0)
+        .descriptor_count(1)
+        .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
+        .stage_flags(vk::ShaderStageFlags::VERTEX)
+        .build()];
+    let layout_info = vk::DescriptorSetLayoutCreateInfo::builder().bindings(&bindings);
+    device.create_descriptor_set_layout(&layout_info, None)
+}
+
+unsafe fn create_global_descriptor_set(
+    device: &ash::Device,
+    layout: vk::DescriptorSetLayout,
+    pool: vk::DescriptorPool,
+) -> VkResult<vk::DescriptorSet> {
+    let layouts = [layout];
+    let alloc_info = vk::DescriptorSetAllocateInfo::builder()
+        .descriptor_pool(pool)
+        .set_layouts(&layouts);
+
+    device.allocate_descriptor_sets(&alloc_info).map(|it| it[0])
+}
+
+unsafe fn create_descriptor_pool(device: &ash::Device) -> VkResult<vk::DescriptorPool> {
+    let sizes = [vk::DescriptorPoolSize::builder()
+        .descriptor_count(1)
+        .ty(vk::DescriptorType::UNIFORM_BUFFER)
+        .build()];
+    let create_info = vk::DescriptorPoolCreateInfo::builder()
+        .max_sets(16)
+        .pool_sizes(&sizes);
+    device.create_descriptor_pool(&create_info, None)
+}
+
+unsafe fn get_depth_format(
+    physical_device: vk::PhysicalDevice,
+    instance: &ash::Instance,
+    tiling: vk::ImageTiling,
+) -> Result<vk::Format, Box<dyn Error>> {
+    let possible_formats = [
+        vk::Format::D32_SFLOAT,
+        vk::Format::D32_SFLOAT_S8_UINT,
+        vk::Format::D24_UNORM_S8_UINT,
+    ];
+    possible_formats
+        .iter()
+        .find(|fmt| {
+            let props = instance.get_physical_device_format_properties(physical_device, **fmt);
+            if tiling == vk::ImageTiling::LINEAR {
+                !(props.linear_tiling_features & vk::FormatFeatureFlags::DEPTH_STENCIL_ATTACHMENT)
+                    .is_empty()
+            } else if tiling == vk::ImageTiling::OPTIMAL {
+                !(props.optimal_tiling_features & vk::FormatFeatureFlags::DEPTH_STENCIL_ATTACHMENT)
+                    .is_empty()
+            } else {
+                false
+            }
+        })
+        .cloned()
+        .ok_or_else(|| "Failed to find a valid depth image format".into())
+}
+
+unsafe fn create_depth_image(
+    device: &ash::Device,
+    format: vk::Format,
+    extent: vk::Extent2D,
+    allocator: Arc<Allocator>,
+) -> Result<(Image, vk::ImageView), Box<dyn Error>> {
+    let create_info = vk::ImageCreateInfo::builder()
+        .format(format)
+        .image_type(vk::ImageType::TYPE_2D)
+        .extent(vk::Extent3D::from(extent))
+        .mip_levels(1)
+        .array_layers(1)
+        .tiling(vk::ImageTiling::OPTIMAL)
+        .initial_layout(vk::ImageLayout::UNDEFINED)
+        .usage(vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT)
+        .sharing_mode(vk::SharingMode::EXCLUSIVE)
+        .samples(vk::SampleCountFlags::TYPE_1);
+    let alloc_info = vk_mem::AllocationCreateInfo {
+        usage: vk_mem::MemoryUsage::GpuOnly,
+        required_flags: vk::MemoryPropertyFlags::DEVICE_LOCAL,
+        ..Default::default()
+    };
+    let image = Image::new(&create_info, &alloc_info, allocator)?;
+    let sub_range = vk::ImageSubresourceRange::builder()
+        .base_mip_level(0)
+        .level_count(1)
+        .base_array_layer(0)
+        .layer_count(1)
+        .aspect_mask(vk::ImageAspectFlags::DEPTH)
+        .build();
+
+    let view_info = vk::ImageViewCreateInfo::builder()
+        .image(*image)
+        .format(format)
+        .subresource_range(sub_range)
+        .view_type(vk::ImageViewType::TYPE_2D);
+
+    let view = device.create_image_view(&view_info, None)?;
+    Ok((image, view))
 }
 
 /// loads the debug messenger functions and handle object.

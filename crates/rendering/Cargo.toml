@@ -22,6 +22,9 @@ nalgebra = "0.31.0"
 uom = { version = "0.32.0", features = ["use_serde"] }
 obj-rs = "0.7.0"
 scopeguard = "1.1.0"
+rusqlite = { version = "0.27.0", features = ["blob"] }
+spirv-reflect = "0.2.3"
+memoffset = "0.6.5"
 
 [features]
 default = ['vulkan', 'validation-layers']

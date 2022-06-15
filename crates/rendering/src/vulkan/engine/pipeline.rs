@@ -1,57 +1,88 @@
 use std::error::Error;
 use std::ffi::CString;
 use std::fs;
-use std::fs::File;
-use std::path::Path;
+use std::io::Cursor;
 
 use ash::prelude::VkResult;
 use ash::vk;
+use itertools::Itertools;
 use log::{error, info};
 use once_cell::sync::OnceCell;
 use scopeguard::defer;
+use spirv_reflect::types::ReflectShaderStageFlags;
 
 use engine::filesystem::DIRS;
 
+use crate::vulkan::mesh::Vertex;
+
 static CACHE: OnceCell<vk::PipelineCache> = OnceCell::new();
 
-pub fn create_graphics_pipeline(
+pub fn create_pipeline(
     device: &ash::Device,
     image_fmt: vk::Format,
+    depth_fmt: vk::Format,
     extent: vk::Extent2D,
+    module_data: Vec<Vec<u8>>,
+    global_descriptor_layout: vk::DescriptorSetLayout
 ) -> Result<(vk::Pipeline, vk::PipelineLayout), Box<dyn Error>> {
-    let cache = CACHE.get_or_try_init(|| load_cache(device))?;
-    let vert = load_spv(device, "base.vert.spv")?;
-    let frag = load_spv(device, "base.frag.spv")?;
+    let module_data = module_data
+        .into_iter()
+        .map(|data| spirv_reflect::create_shader_module(&data).map(|it| (it, data)))
+        .map_ok(|(reflect, data)| {
+            let mut cursor = Cursor::new(data);
+            ash::util::read_spv(&mut cursor).map(|it| (reflect, it))
+        })
+        .flatten_ok()
+        .map_ok(|(reflect, data)| {
+            let create_info = vk::ShaderModuleCreateInfo::builder().code(&data);
+            unsafe { device.create_shader_module(&create_info, None) }.map(|it| (reflect, it))
+        })
+        .flatten_ok()
+        .collect::<Result<Vec<_>, _>>()?;
+
     defer! {
-        unsafe {
-            device.destroy_shader_module(vert, None);
-            device.destroy_shader_module(frag, None);
+        for (_,module) in &module_data {
+            unsafe {
+                device.destroy_shader_module(*module, None);
+            }
         }
     }
-    let name = CString::new("main")?;
-    let stage_info = [vk::PipelineShaderStageCreateInfo::builder()
-        .stage(vk::ShaderStageFlags::VERTEX)
-        .module(vert)
-        .name(&name)
-        .build(),
-        vk::PipelineShaderStageCreateInfo::builder()
-            .stage(vk::ShaderStageFlags::FRAGMENT)
-            .module(frag)
-            .name(&name)
-            .build()
-        ];
+
+    let name = CString::new("main").unwrap();
+    let stages = module_data
+        .iter()
+        .map(|(info, module)| {
+            match info.get_shader_stage() {
+                ReflectShaderStageFlags::VERTEX => Ok(vk::ShaderStageFlags::VERTEX),
+                ReflectShaderStageFlags::FRAGMENT => Ok(vk::ShaderStageFlags::FRAGMENT),
+                ReflectShaderStageFlags::GEOMETRY => Ok(vk::ShaderStageFlags::GEOMETRY),
+                ReflectShaderStageFlags::TESSELLATION_CONTROL => {
+                    Ok(vk::ShaderStageFlags::TESSELLATION_CONTROL)
+                }
+                ReflectShaderStageFlags::TESSELLATION_EVALUATION => {
+                    Ok(vk::ShaderStageFlags::TESSELLATION_EVALUATION)
+                }
+                ReflectShaderStageFlags::COMPUTE => Ok(vk::ShaderStageFlags::COMPUTE),
+                _ => Err("Invalid stage flags"),
+            }
+            .map(|stage| {
+                vk::PipelineShaderStageCreateInfo::builder()
+                    .stage(stage)
+                    .module(*module)
+                    .name(&name)
+                    .build()
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
 
     let fmts = [image_fmt];
     let mut render_info =
-        vk::PipelineRenderingCreateInfo::builder().color_attachment_formats(&fmts);
+        vk::PipelineRenderingCreateInfo::builder().color_attachment_formats(&fmts).depth_attachment_format(depth_fmt);
 
+    let (bindings, attributes) = Vertex::get_vertex_description();
     let vert_input = vk::PipelineVertexInputStateCreateInfo::builder()
-    //todo
-        ;
-
-    let input_asm = vk::PipelineInputAssemblyStateCreateInfo::builder()
-        .primitive_restart_enable(false)
-        .topology(vk::PrimitiveTopology::TRIANGLE_LIST);
+        .vertex_binding_descriptions(&bindings)
+        .vertex_attribute_descriptions(&attributes);
 
     let viewport = [vk::Viewport::builder()
         .x(0.)
@@ -67,9 +98,22 @@ pub fn create_graphics_pipeline(
         extent,
     }];
 
-    let viewport_state = vk::PipelineViewportStateCreateInfo::builder()
+    let depth = vk::PipelineDepthStencilStateCreateInfo::builder()
+        .depth_test_enable(true)
+        .depth_write_enable(true)
+        .depth_compare_op(vk::CompareOp::LESS)
+        .depth_bounds_test_enable(false)
+        .stencil_test_enable(false)
+        .min_depth_bounds(0.)
+        .max_depth_bounds(1.);
+
+    let viewport = vk::PipelineViewportStateCreateInfo::builder()
         .viewports(&viewport)
         .scissors(&scissor);
+
+    let input_asm = vk::PipelineInputAssemblyStateCreateInfo::builder()
+        .primitive_restart_enable(false)
+        .topology(vk::PrimitiveTopology::TRIANGLE_LIST);
 
     let raster = vk::PipelineRasterizationStateCreateInfo::builder()
         .depth_clamp_enable(false)
@@ -95,39 +139,43 @@ pub fn create_graphics_pipeline(
         .logic_op_enable(false)
         .attachments(&color_attachment);
 
-    let layout_info = vk::PipelineLayoutCreateInfo::builder();
-    let layout = unsafe { device.create_pipeline_layout(&layout_info, None)? };
+    let desc = [global_descriptor_layout];
+    let layout = create_layout(module_data.iter().map(|it| &it.0), device, &desc)?;
 
     let create_info = [vk::GraphicsPipelineCreateInfo::builder()
         .push_next(&mut render_info)
-        .layout(layout)
-        .stages(&stage_info)
+        .stages(&stages)
         .vertex_input_state(&vert_input)
+        .viewport_state(&viewport)
         .input_assembly_state(&input_asm)
-        .viewport_state(&viewport_state)
         .rasterization_state(&raster)
+        .render_pass(vk::RenderPass::null())
         .multisample_state(&multisample)
         .color_blend_state(&color)
-        .render_pass(vk::RenderPass::null())
+        .layout(layout)
+        .depth_stencil_state(&depth)
         .build()];
 
+    let cache = CACHE.get_or_try_init(|| load_cache(device))?;
     match unsafe { device.create_graphics_pipelines(*cache, &create_info, None) } {
         Ok(pipelines) => Ok((pipelines[0], layout)),
         Err((_, e)) => Err(e.into()),
     }
 }
 
-/// Load a shader with the given filename
-fn load_spv(
-    device: &ash::Device,
-    filename: impl AsRef<Path>,
-) -> Result<vk::ShaderModule, Box<dyn Error>> {
-    let shader_path = DIRS.asset.join("shaders").join(filename);
-    let mut file = File::open(&shader_path)?;
-    let spv = ash::util::read_spv(&mut file)?;
-    info!("Loaded shader {shader_path:?}");
-    let create_info = vk::ShaderModuleCreateInfo::builder().code(&spv);
-    Ok(unsafe { device.create_shader_module(&create_info, None)? })
+fn create_layout<'a, I>(iter: I, device: &ash::Device, set_layouts: &[vk::DescriptorSetLayout]) -> VkResult<vk::PipelineLayout>
+where
+    I: Iterator<Item = &'a spirv_reflect::ShaderModule>,
+{
+    let ranges = [vk::PushConstantRange::builder()
+        .size(std::mem::size_of::<nalgebra::Matrix4<f32>>() as u32)
+        .offset(0)
+        .stage_flags(vk::ShaderStageFlags::VERTEX)
+        .build()];
+
+    let create_info = vk::PipelineLayoutCreateInfo::builder().push_constant_ranges(&ranges).set_layouts(set_layouts);
+    //todo descriptor sets from reflection data
+    unsafe { device.create_pipeline_layout(&create_info, None) }
 }
 
 /// Loads the pipeline cache from a file or creates a new empty cache if the file could not be read

@@ -1,8 +1,10 @@
 use std::error::Error;
 use std::ffi::CStr;
+use std::fs;
 use std::fs::File;
 use std::io::BufReader;
 use std::mem::ManuallyDrop;
+use std::ops::Deref;
 use std::path::Path;
 use std::sync::{Arc, Barrier};
 use std::thread::JoinHandle;
@@ -10,14 +12,17 @@ use std::thread::JoinHandle;
 use ash::vk;
 use ash::vk::DependencyFlags;
 use crossbeam_channel::{Receiver, Sender};
-use log::{error, info, log, Level, warn};
-use nalgebra::{Matrix4, Perspective3, Transform3};
+use log::{error, info, log, warn, Level};
+use nalgebra::{Matrix4, Perspective3};
 use obj::{load_obj, Obj};
-use parking_lot::{Condvar, Mutex};
+use once_cell::sync::Lazy;
 use smallvec::SmallVec;
+use vk_mem::Allocator;
 
-use crate::vulkan::engine::alloc::{destroy_allocator, GpuObject};
-use crate::vulkan::engine::pipeline::{cleanup_cache, create_graphics_pipeline};
+use engine::filesystem::DIRS;
+
+use crate::vulkan::engine::alloc::{GpuObject, Image};
+use crate::vulkan::engine::pipeline::{cleanup_cache, create_pipeline};
 use crate::vulkan::mesh::Vertex;
 use crate::{cull_test, Material, Mesh, RenderingEngine};
 
@@ -39,13 +44,13 @@ pub struct Engine {
     ),
     surface: vk::SurfaceKHR,
     graphics_queue: vk::Queue,
-    presentation_queue: vk::Queue,
     surface_format: vk::SurfaceFormatKHR,
     swapchain: vk::SwapchainKHR,
     swapchain_loader: Arc<ash::extensions::khr::Swapchain>,
     swapchain_extent: vk::Extent2D,
     swapchain_images: Vec<vk::Image>,
     swapchain_views: Vec<vk::ImageView>,
+    allocator: Arc<Allocator>,
     frames: [Frame; FRAMES_IN_FLIGHT],
     render_channels: SmallVec<[Sender<RenderCommand>; 12]>,
     render_thread_handles: SmallVec<[JoinHandle<()>; 12]>,
@@ -57,6 +62,11 @@ pub struct Engine {
     current_thread: usize,
     current_image_index: u32,
     utility_pool: vk::CommandPool,
+    global_descriptor_layout: vk::DescriptorSetLayout,
+    descriptor_pool: vk::DescriptorPool,
+    depth_format: vk::Format,
+    depth_image: ManuallyDrop<Image>,
+    depth_view: vk::ImageView
 }
 
 #[derive(Debug)]
@@ -69,6 +79,7 @@ struct Frame {
     graphics_semaphore: vk::Semaphore,
     present_semaphore: vk::Semaphore,
     ubo: ManuallyDrop<GpuObject<Ubo>>,
+    global_descriptor: vk::DescriptorSet,
 }
 
 #[derive(Debug)]
@@ -78,7 +89,12 @@ struct Ubo {
 }
 
 enum RenderCommand {
-    Begin(vk::CommandBuffer, Matrix4<f32>, Perspective3<f32>),
+    Begin(
+        vk::CommandBuffer,
+        Matrix4<f32>,
+        Perspective3<f32>,
+        vk::DescriptorSet,
+    ),
     Render(Arc<Mesh>, Arc<Material>, Matrix4<f32>),
     End,
 }
@@ -93,8 +109,19 @@ struct PresentData {
     signal_fence: vk::Fence,
 }
 
+#[rustfmt::skip]
+static COORDINATE_CORRECTION: Lazy<Matrix4<f32>> = Lazy::new(|| {
+    Matrix4::from_row_slice(&[
+        1f32, 0f32, 0f32, 0f32,
+        0f32, -1f32, 0f32, 0f32,
+        0f32, 0f32, 0.5f32, 0.5f32,
+        0f32, 0f32, 0f32, 1f32,
+    ])
+});
+
 impl RenderingEngine for Engine {
     fn begin_rendering(&mut self, view: &Matrix4<f32>, projection: &Perspective3<f32>) {
+        let proj = *COORDINATE_CORRECTION * projection.to_homogeneous();
         let frame = &mut self.frames[self.frame_count as usize % FRAMES_IN_FLIGHT];
         let fences = [frame.fence];
         unsafe {
@@ -116,7 +143,7 @@ impl RenderingEngine for Engine {
             }
             self.current_image_index = index;
             frame.ubo.view = *view;
-            frame.ubo.projection = projection.to_homogeneous();
+            frame.ubo.projection = proj;
             self.device
                 .reset_command_pool(frame.primary_pool, vk::CommandPoolResetFlags::empty())
                 .unwrap();
@@ -131,37 +158,17 @@ impl RenderingEngine for Engine {
                 .begin_command_buffer(frame.primary_buffer, &begin_info)
                 .unwrap();
 
-            let image_barrier = [vk::ImageMemoryBarrier::builder()
-                .dst_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_WRITE)
-                .old_layout(vk::ImageLayout::UNDEFINED)
-                .new_layout(vk::ImageLayout::ATTACHMENT_OPTIMAL)
-                .image(self.swapchain_images[self.current_image_index as usize])
-                .subresource_range(vk::ImageSubresourceRange {
-                    aspect_mask: vk::ImageAspectFlags::COLOR,
-                    base_mip_level: 0,
-                    level_count: 1,
-                    base_array_layer: 0,
-                    layer_count: 1,
-                })
-                .build()];
-
-            self.device.cmd_pipeline_barrier(
-                frame.primary_buffer,
-                vk::PipelineStageFlags::TOP_OF_PIPE,
-                vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
-                vk::DependencyFlags::empty(),
-                &[],
-                &[],
-                &image_barrier,
-            );
+            pre_image_transition(&self.device, frame.primary_buffer, self.swapchain_images[self.current_image_index as usize], **self.depth_image);
 
             for buf in &frame.secondary_buffers {
                 let colors = [self.surface_format.format];
                 let mut rendering_info = vk::CommandBufferInheritanceRenderingInfo::builder()
                     .color_attachment_formats(&colors)
-                    .rasterization_samples(vk::SampleCountFlags::TYPE_1);
+                    .rasterization_samples(vk::SampleCountFlags::TYPE_1)
+                    .depth_attachment_format(self.depth_format);
                 let inheritance_info =
-                    vk::CommandBufferInheritanceInfo::builder().push_next(&mut rendering_info);
+                    vk::CommandBufferInheritanceInfo::builder()
+                        .push_next(&mut rendering_info);
                 let begin_info = vk::CommandBufferBeginInfo::builder()
                     .inheritance_info(&inheritance_info)
                     .flags(
@@ -177,18 +184,34 @@ impl RenderingEngine for Engine {
                 .load_op(vk::AttachmentLoadOp::CLEAR)
                 .store_op(vk::AttachmentStoreOp::STORE)
                 .clear_value(vk::ClearValue {
-                    color: vk::ClearColorValue { float32: [1.; 4] },
+                    color: vk::ClearColorValue {
+                        float32: [0., 0., 0., 1.],
+                    },
                 })
                 .build()];
+            let depth_attachment = vk::RenderingAttachmentInfo::builder()
+                .image_view(self.depth_view)
+                .image_layout(vk::ImageLayout::DEPTH_ATTACHMENT_OPTIMAL)
+                .load_op(vk::AttachmentLoadOp::CLEAR)
+                .store_op(vk::AttachmentStoreOp::DONT_CARE)
+                .clear_value(vk::ClearValue {
+                    depth_stencil: vk::ClearDepthStencilValue {
+                        depth: 1.,
+                        stencil: 0
+                    }
+                })
+                ;
 
             let rendering_info = vk::RenderingInfo::builder()
                 .flags(vk::RenderingFlagsKHR::CONTENTS_SECONDARY_COMMAND_BUFFERS)
                 .layer_count(1)
                 .color_attachments(&color_attachment)
+                .depth_attachment(&depth_attachment)
                 .render_area(vk::Rect2D {
                     offset: Default::default(),
                     extent: self.swapchain_extent,
                 });
+
             self.device
                 .cmd_begin_rendering(frame.primary_buffer, &rendering_info);
             for (index, channel) in self.render_channels.iter().enumerate() {
@@ -197,6 +220,7 @@ impl RenderingEngine for Engine {
                         frame.secondary_buffers[index],
                         *view,
                         *projection,
+                        frame.global_descriptor,
                     ))
                     .unwrap();
             }
@@ -228,7 +252,8 @@ impl RenderingEngine for Engine {
         self.render_barrier.wait();
         let frame = &self.frames[self.frame_count as usize % FRAMES_IN_FLIGHT];
 
-        let image_barrier = [vk::ImageMemoryBarrier::builder()
+        let image_barrier = [
+            vk::ImageMemoryBarrier::builder()
             .src_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_WRITE)
             .old_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
             .new_layout(vk::ImageLayout::PRESENT_SRC_KHR)
@@ -240,7 +265,8 @@ impl RenderingEngine for Engine {
                 base_array_layer: 0,
                 layer_count: 1,
             })
-            .build()];
+            .build()
+        ];
 
         unsafe {
             for buffer in &frame.secondary_buffers {
@@ -308,8 +334,15 @@ impl RenderingEngine for Engine {
             .command_pool(self.utility_pool)
             .level(vk::CommandBufferLevel::PRIMARY);
         let cmd = unsafe { self.device.allocate_command_buffers(&alloc)? }[0];
-        let mesh =
-            Mesh::new(vertices, indices, &self.device, cmd, self.graphics_queue).map(Arc::new);
+        let mesh = Mesh::new(
+            vertices,
+            indices,
+            &self.device,
+            cmd,
+            self.graphics_queue,
+            self.allocator.clone(),
+        )
+        .map(Arc::new);
         let cmd = [cmd];
         unsafe { self.device.free_command_buffers(self.utility_pool, &cmd) };
         info!("Loaded model {path:?}");
@@ -317,17 +350,31 @@ impl RenderingEngine for Engine {
     }
 
     fn load_material(&mut self) -> Result<Arc<Material>, Box<dyn Error>> {
-        let (pipeline, layout) = create_graphics_pipeline(
+        let shaders = DIRS.asset.join("shaders");
+        let data = vec![
+            fs::read(shaders.join("base.vert.spv"))?,
+            fs::read(shaders.join("base.frag.spv"))?,
+        ];
+
+        let (pipeline, layout) = create_pipeline(
             &self.device,
             self.surface_format.format,
+            self.depth_format,
             self.swapchain_extent,
+            data,
+            self.global_descriptor_layout,
         )?;
+
         info!("Created graphics pipeline");
         Ok(Arc::new(Material {
             pipeline,
             layout,
             device: self.device.clone(),
         }))
+    }
+
+    fn wait(&self) {
+        unsafe { self.device.device_wait_idle().unwrap() };
     }
 }
 
@@ -344,13 +391,15 @@ fn render_thread(receiver: Receiver<RenderCommand>, device: &ash::Device, barrie
     let mut last_material = std::ptr::null();
     let mut view = Default::default();
     let mut projection = Perspective3::from_matrix_unchecked(Default::default());
+    let mut global_descriptors = [vk::DescriptorSet::null()];
     while let Ok(command) = receiver.recv() {
         match command {
             // initialize some per frame data for this thread
-            RenderCommand::Begin(cmd_buf, view_matrix, proj) => {
+            RenderCommand::Begin(cmd_buf, view_matrix, proj, desc) => {
                 cmd = cmd_buf;
                 view = view_matrix;
                 projection = proj;
+                global_descriptors[0] = desc;
             }
 
             // record the rendering commands
@@ -362,26 +411,34 @@ fn render_thread(receiver: Receiver<RenderCommand>, device: &ash::Device, barrie
                 unsafe {
                     if !std::ptr::eq(mesh.as_ref(), last_mesh) {
                         last_mesh = mesh.as_ref();
-                        // mesh.bind(device, cmd);
+                        mesh.bind(device, cmd);
                     }
+
                     if !std::ptr::eq(material.as_ref(), last_material) {
                         last_material = material.as_ref();
                         material.bind(device, cmd);
+                        device.cmd_bind_descriptor_sets(
+                            cmd,
+                            vk::PipelineBindPoint::GRAPHICS,
+                            material.get_pipeline_layout(),
+                            0,
+                            &global_descriptors,
+                            &[],
+                        );
                     }
 
-                    // device.cmd_push_constants(
-                    //     cmd,
-                    //     material.get_pipeline_layout(),
-                    //     vk::ShaderStageFlags::VERTEX,
-                    //     0,
-                    //     std::slice::from_raw_parts(
-                    //         transform.as_ptr() as *const u8,
-                    //         std::mem::size_of::<Transform3<f32>>(),
-                    //     ),
-                    // );
+                    device.cmd_push_constants(
+                        cmd,
+                        material.get_pipeline_layout(),
+                        vk::ShaderStageFlags::VERTEX,
+                        0,
+                        std::slice::from_raw_parts(
+                            transform.as_ptr() as *const u8,
+                            std::mem::size_of::<Matrix4<f32>>(),
+                        ),
+                    );
 
-                    //device.cmd_draw_indexed(cmd, mesh.get_index_count(), 1, 0, 0, 0);
-                    device.cmd_draw(cmd, 3, 1, 0, 0);
+                    device.cmd_draw_indexed(cmd, mesh.get_index_count(), 1, 0, 0, 0);
                 }
             }
 
@@ -412,7 +469,6 @@ fn presentation_thread(
     presentation_queue: vk::Queue,
 ) {
     while let Ok(data) = receiver.recv() {
-        //let _lock = data.mutex.lock();
         let submit_info = [vk::SubmitInfo::builder()
             .command_buffers(&[data.cmd])
             .wait_semaphores(&[data.present_semaphore])
@@ -439,6 +495,57 @@ fn presentation_thread(
                 .expect("Queue presentation failed");
         }
     }
+}
+
+unsafe fn pre_image_transition(device: &ash::Device, cmd: vk::CommandBuffer, color_image: vk::Image, depth_image: vk::Image) {
+    let image_barrier = [
+        vk::ImageMemoryBarrier::builder()
+            .dst_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_WRITE)
+            .old_layout(vk::ImageLayout::UNDEFINED)
+            .new_layout(vk::ImageLayout::ATTACHMENT_OPTIMAL)
+            .image(color_image)
+            .subresource_range(vk::ImageSubresourceRange {
+                aspect_mask: vk::ImageAspectFlags::COLOR,
+                base_mip_level: 0,
+                level_count: 1,
+                base_array_layer: 0,
+                layer_count: 1,
+            })
+            .build()
+    ];
+
+    device.cmd_pipeline_barrier(
+        cmd,
+        vk::PipelineStageFlags::TOP_OF_PIPE,
+        vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+        vk::DependencyFlags::empty(),
+        &[],
+        &[],
+        &image_barrier,
+    );
+
+    let depth_barrier = [vk::ImageMemoryBarrier::builder()
+        .dst_access_mask(vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE | vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_READ)
+        .old_layout(vk::ImageLayout::UNDEFINED)
+        .new_layout(vk::ImageLayout::DEPTH_ATTACHMENT_OPTIMAL)
+        .image(depth_image)
+        .subresource_range(vk::ImageSubresourceRange {
+            aspect_mask: vk::ImageAspectFlags::DEPTH,
+            base_mip_level: 0,
+            level_count: 1,
+            base_array_layer: 0,
+            layer_count: 1
+         })
+         .build()];
+    device.cmd_pipeline_barrier(
+        cmd,
+        vk::PipelineStageFlags::TOP_OF_PIPE,
+        vk::PipelineStageFlags::EARLY_FRAGMENT_TESTS,
+        vk::DependencyFlags::empty(),
+        &[],
+        &[],
+        &depth_barrier,
+    );
 }
 
 impl Drop for Engine {
@@ -472,13 +579,27 @@ impl Drop for Engine {
                 ManuallyDrop::drop(&mut frame.ubo);
             }
 
+            ManuallyDrop::drop(&mut self.depth_image);
+            self.device.destroy_image_view(self.depth_view, None);
+            self.device
+                .destroy_descriptor_pool(self.descriptor_pool, None);
+            self.device
+                .destroy_descriptor_set_layout(self.global_descriptor_layout, None);
+
             for view in &self.swapchain_views {
                 self.device.destroy_image_view(*view, None);
             }
 
             self.swapchain_loader
                 .destroy_swapchain(self.swapchain, None);
-            destroy_allocator();
+
+            if let Some(alloc) = Arc::get_mut(&mut self.allocator) {
+                alloc.destroy();
+            } else {
+                error!("Allocator reference count was > 1 at destruction, this may indicate a memory leak");
+                // TODO use get_unchecked to destroy the allocator anyway once it's stabilized
+                panic!("Allocator destroyed while still in use");
+            }
             cleanup_cache(&self.device);
             self.device.destroy_device(None);
             self.surface_loader.destroy_surface(self.surface, None);
