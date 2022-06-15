@@ -1,4 +1,5 @@
 use std::time::Duration;
+
 use log::info;
 
 const TICK_INTERVAL: Duration = Duration::from_millis(50);

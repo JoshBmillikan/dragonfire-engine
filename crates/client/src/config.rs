@@ -1,7 +1,7 @@
 use std::fs::File;
 
-use figment::providers::{Env, Format, Serialized, Yaml};
 use figment::Figment;
+use figment::providers::{Env, Format, Serialized, Yaml};
 use log::{error, info};
 use once_cell::sync::Lazy;
 use parking_lot::RwLock;

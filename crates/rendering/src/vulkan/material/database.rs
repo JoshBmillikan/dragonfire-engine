@@ -2,7 +2,6 @@ use rusqlite::{Connection, OpenFlags};
 
 use engine::filesystem::DIRS;
 
-
 thread_local! {
     pub static CONN: once_cell::unsync::Lazy<Connection> = once_cell::unsync::Lazy::new(connect);
 }
@@ -15,6 +14,6 @@ fn connect() -> Connection {
             | OpenFlags::SQLITE_OPEN_NO_MUTEX
             | OpenFlags::SQLITE_OPEN_NOFOLLOW,
     )
-    .expect("Failed to open material database")
+        .expect("Failed to open material database")
 }
 

@@ -34,7 +34,7 @@ pub(super) fn create_allocator(
 struct AllocData {
     allocation: vk_mem::Allocation,
     info: vk_mem::AllocationInfo,
-    allocator: Arc<Allocator>
+    allocator: Arc<Allocator>,
 }
 
 impl Debug for AllocData {
@@ -47,6 +47,7 @@ impl Debug for AllocData {
 }
 
 unsafe impl Send for AllocData {}
+
 unsafe impl Sync for AllocData {}
 
 #[derive(Debug)]
@@ -64,8 +65,8 @@ impl Image {
             alloc: AllocData {
                 allocation,
                 info,
-                allocator
-            }
+                allocator,
+            },
         })
     }
 }
@@ -86,7 +87,7 @@ impl DerefMut for Image {
 
 impl Drop for Image {
     fn drop(&mut self) {
-        unsafe {self.alloc.allocator.destroy_image(self.image, self.alloc.allocation)};
+        unsafe { self.alloc.allocator.destroy_image(self.image, self.alloc.allocation) };
     }
 }
 
@@ -166,7 +167,7 @@ impl<T> GpuObject<T> {
             _spooky: Default::default(),
         })
     }
-    
+
     pub fn get_buffer(&self) -> vk::Buffer {
         self.buffer.buffer
     }

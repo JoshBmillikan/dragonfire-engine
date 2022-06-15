@@ -1,8 +1,8 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
-use log::info;
 
+use log::info;
 use nalgebra::{Isometry3, Point3, Vector3};
 use uom::si::f64::Time;
 use uom::si::time::second;
@@ -12,6 +12,7 @@ use winit::window::Window;
 
 use engine::ecs::{IntoIter, View, World};
 use rendering::{Camera, Material, Mesh, RenderingEngine};
+
 use crate::CONFIG;
 
 pub struct Game<R: RenderingEngine> {
@@ -19,7 +20,7 @@ pub struct Game<R: RenderingEngine> {
     camera: Camera,
     rendering_engine: Box<R>,
     time: Instant,
-    window: Window
+    window: Window,
 }
 
 impl<R: RenderingEngine> Game<R> {
@@ -35,14 +36,14 @@ impl<R: RenderingEngine> Game<R> {
         let eye = Point3::new(0.0, 0.0, 0.0);
         let up = Vector3::new(0., 1., 0.);
         let target = Point3::from(iso.translation.vector);
-        camera.view = Isometry3::look_at_rh(&eye, &target,&up);
+        camera.view = Isometry3::look_at_rh(&eye, &target, &up);
         let _entity = world.add_entity((mesh, material, iso));
         Game {
             world,
             camera,
             rendering_engine,
             time: Instant::now(),
-            window
+            window,
         }
     }
 
