@@ -12,7 +12,7 @@ use crate::vulkan::engine::alloc::Buffer;
 
 pub struct Mesh {
     indices: Vec<u32>,
-    pub vertices: Vec<Vertex>,
+    _vertices: Vec<Vertex>,
     vertex_buffer: Buffer,
     index_buffer: Buffer,
 }
@@ -26,6 +26,21 @@ pub struct Vertex {
 }
 
 impl Mesh {
+    /// Creates a new mesh representing a 3d model.
+    ///
+    /// vertices and indices are immediately copied to the gpu,
+    /// blocking until the queue submission is finished.
+    ///
+    /// # Arguments
+    ///
+    /// * `vertices`: vertices of the model
+    /// * `indices`: model indices
+    /// * `device`: device handle
+    /// * `cmd`: command buffer to run the copy commands
+    /// * `queue`: queue to submit the copy commands to
+    /// * `allocator`: allocator to use when allocating the gpu buffers
+    ///
+    /// returns: Result<Mesh, Box<dyn Error, Global>>
     pub fn new(
         vertices: Vec<Vertex>,
         indices: Vec<u32>,
@@ -51,6 +66,9 @@ impl Mesh {
         unsafe {
             let staging_buf = Buffer::new(&create_info, &alloc_info, allocator.clone())?;
             let ptr = staging_buf.get_info().get_mapped_data();
+
+            // copy vertices and indices into the staging buffer
+            // Vertices are stored first, indices are stored immediately after in them buffer
             copy_nonoverlapping(vertices.as_ptr() as *const u8, ptr, vertex_size);
             copy_nonoverlapping(
                 indices.as_ptr() as *const u8,
@@ -79,12 +97,14 @@ impl Mesh {
             let begin_info = vk::CommandBufferBeginInfo::builder()
                 .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
             device.begin_command_buffer(cmd, &begin_info)?;
+            // vertices copy
             let cpy = [vk::BufferCopy {
                 src_offset: 0,
                 dst_offset: 0,
                 size: vertex_size as DeviceSize,
             }];
             device.cmd_copy_buffer(cmd, *staging_buf, *vertex_buffer, &cpy);
+            // indices copy
             let cpy = [vk::BufferCopy {
                 src_offset: vertex_size as DeviceSize,
                 dst_offset: 0,
@@ -104,7 +124,7 @@ impl Mesh {
             );
             Ok(Mesh {
                 indices,
-                vertices,
+                _vertices: vertices,
                 vertex_buffer,
                 index_buffer,
             })
@@ -124,6 +144,7 @@ impl Mesh {
 }
 
 impl Vertex {
+    /// Gets the vertex input and attribute descriptions
     pub(crate) fn get_vertex_description() -> (Vec<vk::VertexInputBindingDescription>, Vec<vk::VertexInputAttributeDescription>) {
         let input = vec![
             vk::VertexInputBindingDescription::builder()

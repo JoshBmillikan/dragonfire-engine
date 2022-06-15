@@ -20,6 +20,7 @@ static CACHE: OnceCell<vk::PipelineCache> = OnceCell::new();
 pub fn create_pipeline(
     device: &ash::Device,
     image_fmt: vk::Format,
+    depth_fmt: vk::Format,
     extent: vk::Extent2D,
     module_data: Vec<Vec<u8>>,
     global_descriptor_layout: vk::DescriptorSetLayout
@@ -76,7 +77,7 @@ pub fn create_pipeline(
 
     let fmts = [image_fmt];
     let mut render_info =
-        vk::PipelineRenderingCreateInfo::builder().color_attachment_formats(&fmts);
+        vk::PipelineRenderingCreateInfo::builder().color_attachment_formats(&fmts).depth_attachment_format(depth_fmt);
 
     let (bindings, attributes) = Vertex::get_vertex_description();
     let vert_input = vk::PipelineVertexInputStateCreateInfo::builder()
@@ -96,6 +97,15 @@ pub fn create_pipeline(
         offset: Default::default(),
         extent,
     }];
+
+    let depth = vk::PipelineDepthStencilStateCreateInfo::builder()
+        .depth_test_enable(true)
+        .depth_write_enable(true)
+        .depth_compare_op(vk::CompareOp::LESS)
+        .depth_bounds_test_enable(false)
+        .stencil_test_enable(false)
+        .min_depth_bounds(0.)
+        .max_depth_bounds(1.);
 
     let viewport = vk::PipelineViewportStateCreateInfo::builder()
         .viewports(&viewport)
@@ -143,6 +153,7 @@ pub fn create_pipeline(
         .multisample_state(&multisample)
         .color_blend_state(&color)
         .layout(layout)
+        .depth_stencil_state(&depth)
         .build()];
 
     let cache = CACHE.get_or_try_init(|| load_cache(device))?;

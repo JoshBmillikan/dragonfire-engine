@@ -30,18 +30,69 @@ pub(super) fn create_allocator(
     unsafe { Allocator::new(&create_info).map(Arc::new) }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 struct AllocData {
     allocation: vk_mem::Allocation,
     info: vk_mem::AllocationInfo,
+    allocator: Arc<Allocator>
+}
+
+impl Debug for AllocData {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AllocData")
+            .field("allocation", &self.allocation)
+            .field("info", &self.info)
+            .finish_non_exhaustive()
+    }
 }
 
 unsafe impl Send for AllocData {}
 unsafe impl Sync for AllocData {}
 
+#[derive(Debug)]
+pub struct Image {
+    image: vk::Image,
+    alloc: AllocData,
+}
+
+impl Image {
+    pub unsafe fn new(create_info: &vk::ImageCreateInfo, alloc_info: &vk_mem::AllocationCreateInfo, allocator: Arc<Allocator>) -> VkResult<Self> {
+        let (image, allocation, info) = allocator.create_image(create_info, alloc_info)?;
+
+        Ok(Image {
+            image,
+            alloc: AllocData {
+                allocation,
+                info,
+                allocator
+            }
+        })
+    }
+}
+
+impl Deref for Image {
+    type Target = vk::Image;
+
+    fn deref(&self) -> &Self::Target {
+        &self.image
+    }
+}
+
+impl DerefMut for Image {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.image
+    }
+}
+
+impl Drop for Image {
+    fn drop(&mut self) {
+        unsafe {self.alloc.allocator.destroy_image(self.image, self.alloc.allocation)};
+    }
+}
+
+#[derive(Debug)]
 pub struct Buffer {
     allocation: AllocData,
-    allocator: Arc<Allocator>,
     buffer: vk::Buffer,
 }
 
@@ -50,12 +101,11 @@ impl Buffer {
         create_info: &vk::BufferCreateInfo,
         alloc_info: &vk_mem::AllocationCreateInfo,
         allocator: Arc<Allocator>,
-    ) -> Result<Buffer, Box<dyn Error>> {
+    ) -> VkResult<Buffer> {
         let (buffer, allocation, info) = allocator.create_buffer(create_info, alloc_info)?;
 
         Ok(Buffer {
-            allocation: AllocData { allocation, info },
-            allocator,
+            allocation: AllocData { allocation, info, allocator },
             buffer,
         })
     }
@@ -79,19 +129,10 @@ impl DerefMut for Buffer {
     }
 }
 
-impl Debug for Buffer {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("buffer")
-            .field("buffer", &self.buffer)
-            .field("allocation", &self.allocation)
-            .finish_non_exhaustive()
-    }
-}
-
 impl Drop for Buffer {
     fn drop(&mut self) {
         unsafe {
-            self.allocator
+            self.allocation.allocator
                 .destroy_buffer(self.buffer, self.allocation.allocation);
         }
     }

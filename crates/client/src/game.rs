@@ -31,8 +31,9 @@ impl<R: RenderingEngine> Game<R> {
         let mut world = World::new();
         let mut iso = Isometry3::<f32>::default();
         iso.translation.x += 1.;
+        iso.translation.z += 6.;
         let eye = Point3::new(0.0, 0.0, 0.0);
-        let up = Vector3::new(0., -1., 0.);
+        let up = Vector3::new(0., 1., 0.);
         let target = Point3::from(iso.translation.vector);
         camera.view = Isometry3::look_at_rh(&eye, &target,&up);
         let _entity = world.add_entity((mesh, material, iso));

@@ -1,7 +1,4 @@
-use std::sync::{Mutex, Weak};
-
 use rusqlite::{Connection, OpenFlags};
-
 
 use engine::filesystem::DIRS;
 
