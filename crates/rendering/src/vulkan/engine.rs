@@ -178,42 +178,7 @@ impl RenderingEngine for Engine {
                 self.device.begin_command_buffer(*buf, &begin_info).unwrap();
             }
 
-            let color_attachment = [vk::RenderingAttachmentInfo::builder()
-                .image_view(self.swapchain_views[index as usize])
-                .image_layout(vk::ImageLayout::ATTACHMENT_OPTIMAL)
-                .load_op(vk::AttachmentLoadOp::CLEAR)
-                .store_op(vk::AttachmentStoreOp::STORE)
-                .clear_value(vk::ClearValue {
-                    color: vk::ClearColorValue {
-                        float32: [0., 0., 0., 1.],
-                    },
-                })
-                .build()];
-            let depth_attachment = vk::RenderingAttachmentInfo::builder()
-                .image_view(self.depth_view)
-                .image_layout(vk::ImageLayout::DEPTH_ATTACHMENT_OPTIMAL)
-                .load_op(vk::AttachmentLoadOp::CLEAR)
-                .store_op(vk::AttachmentStoreOp::DONT_CARE)
-                .clear_value(vk::ClearValue {
-                    depth_stencil: vk::ClearDepthStencilValue {
-                        depth: 1.,
-                        stencil: 0
-                    }
-                })
-                ;
-
-            let rendering_info = vk::RenderingInfo::builder()
-                .flags(vk::RenderingFlagsKHR::CONTENTS_SECONDARY_COMMAND_BUFFERS)
-                .layer_count(1)
-                .color_attachments(&color_attachment)
-                .depth_attachment(&depth_attachment)
-                .render_area(vk::Rect2D {
-                    offset: Default::default(),
-                    extent: self.swapchain_extent,
-                });
-
-            self.device
-                .cmd_begin_rendering(frame.primary_buffer, &rendering_info);
+            begin(self.swapchain_views[index as usize], self.depth_view, self.swapchain_extent, frame.primary_buffer, &self.device);
             for (index, channel) in self.render_channels.iter().enumerate() {
                 channel
                     .send(RenderCommand::Begin(
@@ -495,6 +460,44 @@ fn presentation_thread(
                 .expect("Queue presentation failed");
         }
     }
+}
+
+unsafe fn begin(image_view: vk::ImageView, depth_view: vk::ImageView, extent: vk::Extent2D, cmd: vk::CommandBuffer, device: &ash::Device) {
+    let color_attachment = [vk::RenderingAttachmentInfo::builder()
+        .image_view(image_view)
+        .image_layout(vk::ImageLayout::ATTACHMENT_OPTIMAL)
+        .load_op(vk::AttachmentLoadOp::CLEAR)
+        .store_op(vk::AttachmentStoreOp::STORE)
+        .clear_value(vk::ClearValue {
+            color: vk::ClearColorValue {
+                float32: [0., 0., 0., 1.],
+            },
+        })
+        .build()];
+    let depth_attachment = vk::RenderingAttachmentInfo::builder()
+        .image_view(depth_view)
+        .image_layout(vk::ImageLayout::DEPTH_ATTACHMENT_OPTIMAL)
+        .load_op(vk::AttachmentLoadOp::CLEAR)
+        .store_op(vk::AttachmentStoreOp::DONT_CARE)
+        .clear_value(vk::ClearValue {
+            depth_stencil: vk::ClearDepthStencilValue {
+                depth: 1.,
+                stencil: 0
+            }
+        })
+        ;
+
+    let rendering_info = vk::RenderingInfo::builder()
+        .flags(vk::RenderingFlagsKHR::CONTENTS_SECONDARY_COMMAND_BUFFERS)
+        .layer_count(1)
+        .color_attachments(&color_attachment)
+        .depth_attachment(&depth_attachment)
+        .render_area(vk::Rect2D {
+            offset: Default::default(),
+            extent,
+        });
+
+    device.cmd_begin_rendering(cmd, &rendering_info);
 }
 
 unsafe fn pre_image_transition(device: &ash::Device, cmd: vk::CommandBuffer, color_image: vk::Image, depth_image: vk::Image) {
