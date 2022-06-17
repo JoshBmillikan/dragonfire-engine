@@ -1,7 +1,9 @@
 use std::error::Error;
 use std::sync::Arc;
+
 use ash::vk;
 use rusqlite::Connection;
+
 use crate::vulkan::material::Material;
 
 pub fn load_material(

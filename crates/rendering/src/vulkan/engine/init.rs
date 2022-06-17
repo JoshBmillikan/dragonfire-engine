@@ -14,11 +14,11 @@ use raw_window_handle::HasRawWindowHandle;
 use smallvec::SmallVec;
 use vk_mem::Allocator;
 
-use crate::vulkan::engine::alloc::{create_allocator, GpuObject, Image};
-use crate::vulkan::engine::{
-    debug_callback, presentation_thread, render_thread, Engine, Frame, Ubo, FRAMES_IN_FLIGHT,
-};
 use crate::GraphicsSettings;
+use crate::vulkan::engine::{
+    debug_callback, Engine, Frame, FRAMES_IN_FLIGHT, presentation_thread, render_thread, Ubo,
+};
+use crate::vulkan::engine::alloc::{create_allocator, GpuObject, Image};
 
 impl Engine {
     /// Creates the vulkan rendering engine using a window handle and the graphics settings
@@ -32,7 +32,7 @@ impl Engine {
         let instance = create_instance(&entry, window)?;
 
         #[cfg(feature = "validation-layers")]
-        let debug_messenger = create_debug_messenger(&entry, &instance)?;
+            let debug_messenger = create_debug_messenger(&entry, &instance)?;
 
         let surface_loader = Box::new(ash::extensions::khr::Surface::new(&entry, &instance));
         let surface = ash_window::create_surface(&entry, &instance, window, None)?;
@@ -200,7 +200,7 @@ unsafe fn create_instance(
     }
     let layers = vec![
         #[cfg(feature = "validation-layers")]
-        CString::new("VK_LAYER_KHRONOS_validation").unwrap(),
+            CString::new("VK_LAYER_KHRONOS_validation").unwrap(),
     ];
     let layers = layers
         .iter()
@@ -222,10 +222,10 @@ unsafe fn create_instance(
         .enabled_extension_names(&extensions);
 
     #[cfg(feature = "validation-layers")]
-    let mut debug = get_debug_info();
+        let mut debug = get_debug_info();
 
     #[cfg(feature = "validation-layers")]
-    let create_info = create_info.push_next(&mut debug);
+        let create_info = create_info.push_next(&mut debug);
 
     Ok(Box::new(entry.create_instance(&create_info, None)?))
 }

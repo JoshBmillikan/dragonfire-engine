@@ -33,11 +33,11 @@ fn compile_shader(path: &Path) {
     let out_path = find_cargo_target_dir().join("asset").join("shaders");
     std::fs::create_dir_all(&out_path).unwrap();
     #[cfg(target_family = "windows")]
-    let name = name + ".exe";
+        let name = name + ".exe";
     let mut cmd = std::process::Command::new(name);
     let cmd = cmd.arg(path.to_str().unwrap());
     #[cfg(not(debug_assertions))]
-    let cmd = cmd.arg("-O");
+        let cmd = cmd.arg("-O");
     let cmd = cmd.arg("-o").arg(format!(
         "{}/{}.spv",
         out_path.to_string_lossy(),

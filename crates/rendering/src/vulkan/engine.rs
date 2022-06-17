@@ -4,7 +4,6 @@ use std::fs;
 use std::fs::File;
 use std::io::BufReader;
 use std::mem::ManuallyDrop;
-use std::ops::Deref;
 use std::path::Path;
 use std::sync::{Arc, Barrier};
 use std::thread::JoinHandle;
@@ -12,7 +11,7 @@ use std::thread::JoinHandle;
 use ash::vk;
 use ash::vk::DependencyFlags;
 use crossbeam_channel::{Receiver, Sender};
-use log::{error, info, log, warn, Level};
+use log::{error, info, Level, log, warn};
 use nalgebra::{Matrix4, Perspective3};
 use obj::{load_obj, Obj};
 use once_cell::sync::Lazy;
@@ -21,16 +20,17 @@ use vk_mem::Allocator;
 
 use engine::filesystem::DIRS;
 
+use crate::{cull_test, Material, Mesh, RenderingEngine};
 use crate::vulkan::engine::alloc::{GpuObject, Image};
 use crate::vulkan::engine::pipeline::{cleanup_cache, create_pipeline};
 use crate::vulkan::mesh::Vertex;
-use crate::{cull_test, Material, Mesh, RenderingEngine};
 
 pub(crate) mod alloc;
 mod init;
 mod pipeline;
 
 const FRAMES_IN_FLIGHT: usize = 2;
+
 pub struct Engine {
     frame_count: u64,
     _entry: Box<ash::Entry>,
@@ -66,7 +66,7 @@ pub struct Engine {
     descriptor_pool: vk::DescriptorPool,
     depth_format: vk::Format,
     depth_image: ManuallyDrop<Image>,
-    depth_view: vk::ImageView
+    depth_view: vk::ImageView,
 }
 
 #[derive(Debug)]
@@ -158,7 +158,12 @@ impl RenderingEngine for Engine {
                 .begin_command_buffer(frame.primary_buffer, &begin_info)
                 .unwrap();
 
-            pre_image_transition(&self.device, frame.primary_buffer, self.swapchain_images[self.current_image_index as usize], **self.depth_image);
+            pre_image_transition(
+                &self.device,
+                frame.primary_buffer,
+                self.swapchain_images[self.current_image_index as usize],
+                **self.depth_image,
+            );
 
             for buf in &frame.secondary_buffers {
                 let colors = [self.surface_format.format];
@@ -167,8 +172,7 @@ impl RenderingEngine for Engine {
                     .rasterization_samples(vk::SampleCountFlags::TYPE_1)
                     .depth_attachment_format(self.depth_format);
                 let inheritance_info =
-                    vk::CommandBufferInheritanceInfo::builder()
-                        .push_next(&mut rendering_info);
+                    vk::CommandBufferInheritanceInfo::builder().push_next(&mut rendering_info);
                 let begin_info = vk::CommandBufferBeginInfo::builder()
                     .inheritance_info(&inheritance_info)
                     .flags(
@@ -178,42 +182,13 @@ impl RenderingEngine for Engine {
                 self.device.begin_command_buffer(*buf, &begin_info).unwrap();
             }
 
-            let color_attachment = [vk::RenderingAttachmentInfo::builder()
-                .image_view(self.swapchain_views[index as usize])
-                .image_layout(vk::ImageLayout::ATTACHMENT_OPTIMAL)
-                .load_op(vk::AttachmentLoadOp::CLEAR)
-                .store_op(vk::AttachmentStoreOp::STORE)
-                .clear_value(vk::ClearValue {
-                    color: vk::ClearColorValue {
-                        float32: [0., 0., 0., 1.],
-                    },
-                })
-                .build()];
-            let depth_attachment = vk::RenderingAttachmentInfo::builder()
-                .image_view(self.depth_view)
-                .image_layout(vk::ImageLayout::DEPTH_ATTACHMENT_OPTIMAL)
-                .load_op(vk::AttachmentLoadOp::CLEAR)
-                .store_op(vk::AttachmentStoreOp::DONT_CARE)
-                .clear_value(vk::ClearValue {
-                    depth_stencil: vk::ClearDepthStencilValue {
-                        depth: 1.,
-                        stencil: 0
-                    }
-                })
-                ;
-
-            let rendering_info = vk::RenderingInfo::builder()
-                .flags(vk::RenderingFlagsKHR::CONTENTS_SECONDARY_COMMAND_BUFFERS)
-                .layer_count(1)
-                .color_attachments(&color_attachment)
-                .depth_attachment(&depth_attachment)
-                .render_area(vk::Rect2D {
-                    offset: Default::default(),
-                    extent: self.swapchain_extent,
-                });
-
-            self.device
-                .cmd_begin_rendering(frame.primary_buffer, &rendering_info);
+            begin(
+                self.swapchain_views[index as usize],
+                self.depth_view,
+                self.swapchain_extent,
+                frame.primary_buffer,
+                &self.device,
+            );
             for (index, channel) in self.render_channels.iter().enumerate() {
                 channel
                     .send(RenderCommand::Begin(
@@ -252,8 +227,7 @@ impl RenderingEngine for Engine {
         self.render_barrier.wait();
         let frame = &self.frames[self.frame_count as usize % FRAMES_IN_FLIGHT];
 
-        let image_barrier = [
-            vk::ImageMemoryBarrier::builder()
+        let image_barrier = [vk::ImageMemoryBarrier::builder()
             .src_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_WRITE)
             .old_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
             .new_layout(vk::ImageLayout::PRESENT_SRC_KHR)
@@ -265,8 +239,7 @@ impl RenderingEngine for Engine {
                 base_array_layer: 0,
                 layer_count: 1,
             })
-            .build()
-        ];
+            .build()];
 
         unsafe {
             for buffer in &frame.secondary_buffers {
@@ -342,7 +315,7 @@ impl RenderingEngine for Engine {
             self.graphics_queue,
             self.allocator.clone(),
         )
-        .map(Arc::new);
+            .map(Arc::new);
         let cmd = [cmd];
         unsafe { self.device.free_command_buffers(self.utility_pool, &cmd) };
         info!("Loaded model {path:?}");
@@ -497,22 +470,68 @@ fn presentation_thread(
     }
 }
 
-unsafe fn pre_image_transition(device: &ash::Device, cmd: vk::CommandBuffer, color_image: vk::Image, depth_image: vk::Image) {
-    let image_barrier = [
-        vk::ImageMemoryBarrier::builder()
-            .dst_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_WRITE)
-            .old_layout(vk::ImageLayout::UNDEFINED)
-            .new_layout(vk::ImageLayout::ATTACHMENT_OPTIMAL)
-            .image(color_image)
-            .subresource_range(vk::ImageSubresourceRange {
-                aspect_mask: vk::ImageAspectFlags::COLOR,
-                base_mip_level: 0,
-                level_count: 1,
-                base_array_layer: 0,
-                layer_count: 1,
-            })
-            .build()
-    ];
+unsafe fn begin(
+    image_view: vk::ImageView,
+    depth_view: vk::ImageView,
+    extent: vk::Extent2D,
+    cmd: vk::CommandBuffer,
+    device: &ash::Device,
+) {
+    let color_attachment = [vk::RenderingAttachmentInfo::builder()
+        .image_view(image_view)
+        .image_layout(vk::ImageLayout::ATTACHMENT_OPTIMAL)
+        .load_op(vk::AttachmentLoadOp::CLEAR)
+        .store_op(vk::AttachmentStoreOp::STORE)
+        .clear_value(vk::ClearValue {
+            color: vk::ClearColorValue {
+                float32: [0., 0., 0., 1.],
+            },
+        })
+        .build()];
+    let depth_attachment = vk::RenderingAttachmentInfo::builder()
+        .image_view(depth_view)
+        .image_layout(vk::ImageLayout::DEPTH_ATTACHMENT_OPTIMAL)
+        .load_op(vk::AttachmentLoadOp::CLEAR)
+        .store_op(vk::AttachmentStoreOp::DONT_CARE)
+        .clear_value(vk::ClearValue {
+            depth_stencil: vk::ClearDepthStencilValue {
+                depth: 1.,
+                stencil: 0,
+            },
+        });
+
+    let rendering_info = vk::RenderingInfo::builder()
+        .flags(vk::RenderingFlagsKHR::CONTENTS_SECONDARY_COMMAND_BUFFERS)
+        .layer_count(1)
+        .color_attachments(&color_attachment)
+        .depth_attachment(&depth_attachment)
+        .render_area(vk::Rect2D {
+            offset: Default::default(),
+            extent,
+        });
+
+    device.cmd_begin_rendering(cmd, &rendering_info);
+}
+
+unsafe fn pre_image_transition(
+    device: &ash::Device,
+    cmd: vk::CommandBuffer,
+    color_image: vk::Image,
+    depth_image: vk::Image,
+) {
+    let image_barrier = [vk::ImageMemoryBarrier::builder()
+        .dst_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_WRITE)
+        .old_layout(vk::ImageLayout::UNDEFINED)
+        .new_layout(vk::ImageLayout::ATTACHMENT_OPTIMAL)
+        .image(color_image)
+        .subresource_range(vk::ImageSubresourceRange {
+            aspect_mask: vk::ImageAspectFlags::COLOR,
+            base_mip_level: 0,
+            level_count: 1,
+            base_array_layer: 0,
+            layer_count: 1,
+        })
+        .build()];
 
     device.cmd_pipeline_barrier(
         cmd,
@@ -525,7 +544,10 @@ unsafe fn pre_image_transition(device: &ash::Device, cmd: vk::CommandBuffer, col
     );
 
     let depth_barrier = [vk::ImageMemoryBarrier::builder()
-        .dst_access_mask(vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE | vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_READ)
+        .dst_access_mask(
+            vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE
+                | vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_READ,
+        )
         .old_layout(vk::ImageLayout::UNDEFINED)
         .new_layout(vk::ImageLayout::DEPTH_ATTACHMENT_OPTIMAL)
         .image(depth_image)
@@ -534,9 +556,9 @@ unsafe fn pre_image_transition(device: &ash::Device, cmd: vk::CommandBuffer, col
             base_mip_level: 0,
             level_count: 1,
             base_array_layer: 0,
-            layer_count: 1
-         })
-         .build()];
+            layer_count: 1,
+        })
+        .build()];
     device.cmd_pipeline_barrier(
         cmd,
         vk::PipelineStageFlags::TOP_OF_PIPE,

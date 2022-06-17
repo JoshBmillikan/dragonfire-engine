@@ -1,9 +1,11 @@
 use std::collections::HashMap;
 use std::error::Error;
 use std::sync::{Arc, Weak};
+
 use ash::{Device, vk};
 use once_cell::sync::Lazy;
 use parking_lot::Mutex;
+
 use crate::vulkan::material::creation::load_material;
 use crate::vulkan::material::database::CONN;
 
@@ -13,8 +15,9 @@ mod creation;
 pub struct Material {
     pub pipeline: vk::Pipeline,
     pub layout: vk::PipelineLayout,
-    pub device: Arc<Device>
+    pub device: Arc<Device>,
 }
+
 static CACHE: Lazy<Mutex<HashMap<String, Weak<Material>>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
 
@@ -43,9 +46,8 @@ impl Material {
     }
 
     pub(super) unsafe fn bind(&self, device: &ash::Device, cmd: vk::CommandBuffer) {
-        device.cmd_bind_pipeline(cmd,  vk::PipelineBindPoint::GRAPHICS, self.pipeline);
+        device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, self.pipeline);
     }
-
 }
 
 impl Drop for Material {

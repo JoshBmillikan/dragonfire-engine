@@ -23,7 +23,7 @@ pub fn create_pipeline(
     depth_fmt: vk::Format,
     extent: vk::Extent2D,
     module_data: Vec<Vec<u8>>,
-    global_descriptor_layout: vk::DescriptorSetLayout
+    global_descriptor_layout: vk::DescriptorSetLayout,
 ) -> Result<(vk::Pipeline, vk::PipelineLayout), Box<dyn Error>> {
     let module_data = module_data
         .into_iter()
@@ -65,13 +65,13 @@ pub fn create_pipeline(
                 ReflectShaderStageFlags::COMPUTE => Ok(vk::ShaderStageFlags::COMPUTE),
                 _ => Err("Invalid stage flags"),
             }
-            .map(|stage| {
-                vk::PipelineShaderStageCreateInfo::builder()
-                    .stage(stage)
-                    .module(*module)
-                    .name(&name)
-                    .build()
-            })
+                .map(|stage| {
+                    vk::PipelineShaderStageCreateInfo::builder()
+                        .stage(stage)
+                        .module(*module)
+                        .name(&name)
+                        .build()
+                })
         })
         .collect::<Result<Vec<_>, _>>()?;
 
@@ -164,8 +164,8 @@ pub fn create_pipeline(
 }
 
 fn create_layout<'a, I>(iter: I, device: &ash::Device, set_layouts: &[vk::DescriptorSetLayout]) -> VkResult<vk::PipelineLayout>
-where
-    I: Iterator<Item = &'a spirv_reflect::ShaderModule>,
+    where
+        I: Iterator<Item=&'a spirv_reflect::ShaderModule>,
 {
     let ranges = [vk::PushConstantRange::builder()
         .size(std::mem::size_of::<nalgebra::Matrix4<f32>>() as u32)

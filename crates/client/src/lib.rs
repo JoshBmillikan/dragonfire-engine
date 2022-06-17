@@ -7,7 +7,7 @@ use winit::event_loop::EventLoop;
 use winit::window::{Window, WindowBuilder};
 
 use engine::filesystem::DIRS;
-use rendering::{create_rendering_engine};
+use rendering::create_rendering_engine;
 
 use crate::config::CONFIG;
 use crate::game::Game;
