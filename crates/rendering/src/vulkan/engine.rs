@@ -470,6 +470,7 @@ fn presentation_thread(
     }
 }
 
+/// Helper function to handle transitioning the color image and depth image to the correct layout
 unsafe fn begin(
     image_view: vk::ImageView,
     depth_view: vk::ImageView,

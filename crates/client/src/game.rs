@@ -1,16 +1,17 @@
+use std::ops::Add;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 
 use log::info;
-use nalgebra::{Isometry3, Point3, Vector3};
+use nalgebra::{Isometry3, Point3, Quaternion, Unit, UnitQuaternion, Vector3};
 use uom::si::f64::Time;
 use uom::si::time::second;
 use winit::event::{Event, WindowEvent};
 use winit::event_loop::ControlFlow;
 use winit::window::Window;
 
-use engine::ecs::{IntoIter, View, World};
+use engine::ecs::{IntoIter, UniqueView, View, ViewMut, World};
 use rendering::{Camera, Material, Mesh, RenderingEngine};
 
 use crate::CONFIG;
@@ -31,13 +32,18 @@ impl<R: RenderingEngine> Game<R> {
         let material = rendering_engine.load_material().unwrap();
         let mut world = World::new();
         let mut iso = Isometry3::<f32>::default();
-        iso.translation.x += 1.;
-        iso.translation.z += 6.;
+        iso.translation.x += 2.;
+        iso.translation.z += -6.;
+        let mut iso2 = iso.clone();
+        iso2.translation.x -= 4.;
         let eye = Point3::new(0.0, 0.0, 0.0);
         let up = Vector3::new(0., 1., 0.);
-        let target = Point3::from(iso.translation.vector);
+        let mut target = iso.translation.vector;
+        target.x = 0.;
+        let target = Point3::from(target);
         camera.view = Isometry3::look_at_rh(&eye, &target, &up);
-        let _entity = world.add_entity((mesh, material, iso));
+        let _entity = world.add_entity((mesh.clone(), material.clone(), iso));
+        let _ = world.add_entity((mesh, material, iso2));
         Game {
             world,
             camera,
@@ -75,12 +81,16 @@ impl<R: RenderingEngine> Game<R> {
             Event::LoopDestroyed => {
                 info!("Shutting down");
                 self.rendering_engine.wait();
+                self.world.clear();
             }
             _ => {}
         }
     }
 
     fn tick(&mut self, delta: Time) {
+        self.world.add_unique(delta).unwrap();
+        self.world.run(rotate).unwrap();
+
         self.rendering_engine.begin_rendering(&self.camera.view.to_homogeneous(), &self.camera.projection);
 
         self.world
@@ -97,5 +107,15 @@ impl<R: RenderingEngine> Game<R> {
             .expect("Rendering failed");
 
         self.rendering_engine.end_rendering();
+        self.world.remove_unique::<Time>().unwrap();
+    }
+}
+
+fn rotate(mut iso: ViewMut<Isometry3<f32>>, time: UniqueView<Time>) {
+    for mut transform in (&mut iso).iter() {
+        let (r, p, y) = transform.rotation.euler_angles();
+        let q =  UnitQuaternion::from_euler_angles(r, p + 1.,y);
+        let r = transform.rotation;
+        transform.rotation = r.slerp(&q, time.value as f32 / 60.);
     }
 }
