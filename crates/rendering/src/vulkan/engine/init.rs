@@ -14,11 +14,11 @@ use raw_window_handle::HasRawWindowHandle;
 use smallvec::SmallVec;
 use vk_mem::Allocator;
 
-use crate::GraphicsSettings;
-use crate::vulkan::engine::{
-    debug_callback, Engine, Frame, FRAMES_IN_FLIGHT, presentation_thread, render_thread, Ubo,
-};
 use crate::vulkan::engine::alloc::{create_allocator, GpuObject, Image};
+use crate::vulkan::engine::{
+    debug_callback, presentation_thread, render_thread, Engine, Frame, Ubo, FRAMES_IN_FLIGHT,
+};
+use crate::GraphicsSettings;
 
 impl Engine {
     /// Creates the vulkan rendering engine using a window handle and the graphics settings
@@ -32,7 +32,7 @@ impl Engine {
         let instance = create_instance(&entry, window)?;
 
         #[cfg(feature = "validation-layers")]
-            let debug_messenger = create_debug_messenger(&entry, &instance)?;
+        let debug_messenger = create_debug_messenger(&entry, &instance)?;
 
         let surface_loader = Box::new(ash::extensions::khr::Surface::new(&entry, &instance));
         let surface = ash_window::create_surface(&entry, &instance, window, None)?;
@@ -200,7 +200,7 @@ unsafe fn create_instance(
     }
     let layers = vec![
         #[cfg(feature = "validation-layers")]
-            CString::new("VK_LAYER_KHRONOS_validation").unwrap(),
+        CString::new("VK_LAYER_KHRONOS_validation").unwrap(),
     ];
     let layers = layers
         .iter()
@@ -222,10 +222,10 @@ unsafe fn create_instance(
         .enabled_extension_names(&extensions);
 
     #[cfg(feature = "validation-layers")]
-        let mut debug = get_debug_info();
+    let mut debug = get_debug_info();
 
     #[cfg(feature = "validation-layers")]
-        let create_info = create_info.push_next(&mut debug);
+    let create_info = create_info.push_next(&mut debug);
 
     Ok(Box::new(entry.create_instance(&create_info, None)?))
 }
@@ -239,15 +239,24 @@ unsafe fn get_physical_device(
     surface_loader: &ash::extensions::khr::Surface,
     extensions: &[&CStr],
 ) -> Result<vk::PhysicalDevice, Box<dyn Error>> {
-    let device = instance
-        .enumerate_physical_devices()?
+    let devices = read_into_uninitialized_small_vector(|count, data| {
+        (instance.fp_v1_0().enumerate_physical_devices)(instance.handle(), count, data)
+    })?;
+    let device = devices
         .into_iter()
         .filter(|device| is_valid_device(*device, instance, extensions))
         .filter(|device| {
             let mut has_graphics = false;
             let mut has_present = false;
-            for (index, prop) in instance
-                .get_physical_device_queue_family_properties(*device)
+            let props = read_into_uninitialized_small_vector(|count, data| {
+                (instance
+                    .fp_v1_0()
+                    .get_physical_device_queue_family_properties)(
+                    *device, count, data
+                );
+                vk::Result::SUCCESS
+            }).unwrap();
+            for (index, prop) in props
                 .into_iter()
                 .enumerate()
             {
@@ -295,7 +304,14 @@ unsafe fn is_valid_device(
         return false;
     }
 
-    if let Ok(props) = instance.enumerate_device_extension_properties(device) {
+    if let Ok(props) = read_into_uninitialized_small_vector(|count, data| {
+        (instance.fp_v1_0().enumerate_device_extension_properties)(
+            device,
+            std::ptr::null(),
+            count,
+            data,
+        )
+    }) {
         for ext in extensions {
             if !props
                 .iter()
@@ -320,8 +336,15 @@ unsafe fn get_queue_families(
 ) -> Result<[u32; 2], Box<dyn Error>> {
     let mut graphics = None;
     let mut present = None;
-    for (index, prop) in instance
-        .get_physical_device_queue_family_properties(physical_device)
+    let props = read_into_uninitialized_small_vector(|count, data| {
+        (instance
+            .fp_v1_0()
+            .get_physical_device_queue_family_properties)(
+            physical_device, count, data
+        );
+        vk::Result::SUCCESS
+    }).unwrap();
+    for (index, prop) in props
         .into_iter()
         .enumerate()
     {
@@ -713,4 +736,25 @@ fn get_debug_info() -> vk::DebugUtilsMessengerCreateInfoEXT {
         )
         .pfn_user_callback(Some(debug_callback))
         .build()
+}
+
+/// copy of the internal ash function, but with a small vec instead of a regular vec
+unsafe fn read_into_uninitialized_small_vector<N: Copy + Default + TryInto<usize>, T>(
+    f: impl Fn(&mut N, *mut T) -> vk::Result,
+) -> VkResult<SmallVec<[T; 16]>>
+where
+    <N as TryInto<usize>>::Error: std::fmt::Debug,
+{
+    loop {
+        let mut count = N::default();
+        f(&mut count, std::ptr::null_mut()).result()?;
+        let mut data =
+            SmallVec::with_capacity(count.try_into().expect("`N` failed to convert to `usize`"));
+
+        let err_code = f(&mut count, data.as_mut_ptr());
+        if err_code != vk::Result::INCOMPLETE {
+            data.set_len(count.try_into().expect("`N` failed to convert to `usize`"));
+            break err_code.result_with_success(data);
+        }
+    }
 }
