@@ -703,7 +703,8 @@ fn get_debug_info() -> vk::DebugUtilsMessengerCreateInfoEXT {
         .message_severity(
             vk::DebugUtilsMessageSeverityFlagsEXT::VERBOSE
                 | vk::DebugUtilsMessageSeverityFlagsEXT::WARNING
-                | vk::DebugUtilsMessageSeverityFlagsEXT::ERROR,
+                | vk::DebugUtilsMessageSeverityFlagsEXT::ERROR
+                | vk::DebugUtilsMessageSeverityFlagsEXT::INFO,
         )
         .message_type(
             vk::DebugUtilsMessageTypeFlagsEXT::GENERAL
