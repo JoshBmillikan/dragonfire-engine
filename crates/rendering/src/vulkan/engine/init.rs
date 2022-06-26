@@ -127,6 +127,7 @@ impl Engine {
             frame_count: 0,
             _entry: entry,
             instance,
+            physical_device,
             device,
             surface_loader,
             #[cfg(feature = "validation-layers")]
@@ -255,11 +256,9 @@ unsafe fn get_physical_device(
                     *device, count, data
                 );
                 vk::Result::SUCCESS
-            }).unwrap();
-            for (index, prop) in props
-                .into_iter()
-                .enumerate()
-            {
+            })
+            .unwrap();
+            for (index, prop) in props.into_iter().enumerate() {
                 if prop.queue_flags & vk::QueueFlags::GRAPHICS != vk::QueueFlags::empty() {
                     has_graphics = true;
                 }
@@ -300,7 +299,9 @@ unsafe fn is_valid_device(
     let mut dyn_render_features = vk::PhysicalDeviceDynamicRenderingFeatures::builder();
     let mut features2 = vk::PhysicalDeviceFeatures2::builder().push_next(&mut dyn_render_features);
     instance.get_physical_device_features2(device, &mut features2);
-    if dyn_render_features.dynamic_rendering != vk::TRUE {
+    if features2.features.sampler_anisotropy != vk::TRUE
+        || dyn_render_features.dynamic_rendering != vk::TRUE
+    {
         return false;
     }
 
@@ -339,15 +340,11 @@ unsafe fn get_queue_families(
     let props = read_into_uninitialized_small_vector(|count, data| {
         (instance
             .fp_v1_0()
-            .get_physical_device_queue_family_properties)(
-            physical_device, count, data
-        );
+            .get_physical_device_queue_family_properties)(physical_device, count, data);
         vk::Result::SUCCESS
-    }).unwrap();
-    for (index, prop) in props
-        .into_iter()
-        .enumerate()
-    {
+    })
+    .unwrap();
+    for (index, prop) in props.into_iter().enumerate() {
         if prop.queue_flags & vk::QueueFlags::GRAPHICS != vk::QueueFlags::empty() {
             graphics = Some(index as u32);
         }
@@ -394,13 +391,17 @@ unsafe fn create_device(
         })
         .collect::<SmallVec<[_; 2]>>();
 
-    let mut features =
+    let mut rendering_features =
         vk::PhysicalDeviceDynamicRenderingFeatures::builder().dynamic_rendering(true);
+
+    let features = vk::PhysicalDeviceFeatures::builder()
+        .sampler_anisotropy(true);
 
     let create_info = vk::DeviceCreateInfo::builder()
         .enabled_extension_names(&extensions)
-        .push_next(&mut features)
-        .queue_create_infos(&queue_info);
+        .push_next(&mut rendering_features)
+        .queue_create_infos(&queue_info)
+        .enabled_features(&features);
     Ok(Arc::new(instance.create_device(
         physical_device,
         &create_info,

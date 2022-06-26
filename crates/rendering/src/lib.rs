@@ -13,6 +13,7 @@ mod vulkan {
     pub mod engine;
     pub(super) mod material;
     pub(super) mod mesh;
+    pub(crate) mod texture;
 }
 
 #[cfg(feature = "vulkan")]

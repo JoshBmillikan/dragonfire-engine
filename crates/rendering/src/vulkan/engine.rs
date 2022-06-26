@@ -11,7 +11,7 @@ use std::thread::JoinHandle;
 use ash::vk;
 use ash::vk::DependencyFlags;
 use crossbeam_channel::{Receiver, Sender};
-use log::{error, info, Level, log, warn};
+use log::{error, info, log, warn, Level};
 use nalgebra::{Matrix4, Perspective3};
 use obj::{load_obj, Obj};
 use once_cell::sync::Lazy;
@@ -20,10 +20,11 @@ use vk_mem::Allocator;
 
 use engine::filesystem::DIRS;
 
-use crate::{cull_test, Material, Mesh, RenderingEngine};
 use crate::vulkan::engine::alloc::{GpuObject, Image};
 use crate::vulkan::engine::pipeline::{cleanup_cache, create_pipeline};
 use crate::vulkan::mesh::Vertex;
+use crate::vulkan::texture::Texture;
+use crate::{cull_test, Material, Mesh, RenderingEngine};
 
 pub(crate) mod alloc;
 mod init;
@@ -35,6 +36,7 @@ pub struct Engine {
     frame_count: u64,
     _entry: Box<ash::Entry>,
     instance: Box<ash::Instance>,
+    physical_device: vk::PhysicalDevice,
     device: Arc<ash::Device>,
     surface_loader: Box<ash::extensions::khr::Surface>,
     #[cfg(feature = "validation-layers")]
@@ -315,7 +317,7 @@ impl RenderingEngine for Engine {
             self.graphics_queue,
             self.allocator.clone(),
         )
-            .map(Arc::new);
+        .map(Arc::new);
         let cmd = [cmd];
         unsafe { self.device.free_command_buffers(self.utility_pool, &cmd) };
         info!("Loaded model {path:?}");
@@ -337,12 +339,34 @@ impl RenderingEngine for Engine {
             data,
             self.global_descriptor_layout,
         )?;
+        let alloc = vk::CommandBufferAllocateInfo::builder()
+            .command_buffer_count(1)
+            .command_pool(self.utility_pool)
+            .level(vk::CommandBufferLevel::PRIMARY);
+        let cmd = unsafe { self.device.allocate_command_buffers(&alloc)? }[0];
+        let anisotropy = unsafe {
+            self.instance
+                .get_physical_device_properties(self.physical_device)
+                .limits
+                .max_sampler_anisotropy
+        };
+        let texture = Texture::new(
+            "texture.png",
+            self.device.clone(),
+            cmd,
+            self.graphics_queue,
+            anisotropy,
+            self.allocator.clone(),
+        );
+        let cmd = [cmd];
+        unsafe { self.device.free_command_buffers(self.utility_pool, &cmd) };
 
         info!("Created graphics pipeline");
         Ok(Arc::new(Material {
             pipeline,
             layout,
             device: self.device.clone(),
+            texture: texture.ok(),
         }))
     }
 
