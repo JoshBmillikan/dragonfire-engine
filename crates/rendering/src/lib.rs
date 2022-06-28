@@ -35,6 +35,7 @@ pub trait RenderingEngine {
 pub struct GraphicsSettings {
     pub resolution: [u32; 2],
     pub fov: Angle,
+    pub vsync: bool,
 }
 
 pub struct Camera {
@@ -46,8 +47,7 @@ impl Camera {
     pub fn new(settings: &GraphicsSettings) -> Self {
         let projection = Perspective3::new(
             settings.resolution[0] as f32 / settings.resolution[1] as f32,
-            //settings.fov.value,
-            0.785398f32,
+            settings.fov.value,
             0.1,
             1000.,
         );
@@ -74,6 +74,7 @@ impl Default for GraphicsSettings {
         GraphicsSettings {
             resolution: [1920, 1080],
             fov: Angle::new::<degree>(45.),
+            vsync: true
         }
     }
 }

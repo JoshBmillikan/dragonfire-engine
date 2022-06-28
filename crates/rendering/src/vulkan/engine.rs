@@ -1,3 +1,4 @@
+use ash::prelude::VkResult;
 use std::error::Error;
 use std::ffi::CStr;
 use std::fs;
@@ -22,10 +23,10 @@ use engine::filesystem::DIRS;
 
 use crate::vulkan::engine::alloc::{GpuObject, Image};
 use crate::vulkan::engine::pipeline::{cleanup_cache, create_pipeline};
+use crate::vulkan::engine::swapchain::Swapchain;
 use crate::vulkan::mesh::Vertex;
 use crate::vulkan::texture::Texture;
 use crate::{cull_test, Material, Mesh, RenderingEngine};
-use crate::vulkan::engine::swapchain::Swapchain;
 
 pub(crate) mod alloc;
 mod init;
@@ -93,6 +94,8 @@ enum RenderCommand {
         Matrix4<f32>,
         Perspective3<f32>,
         vk::DescriptorSet,
+        vk::Format,
+        vk::Format,
     ),
     Render(Arc<Mesh>, Arc<Material>, Matrix4<f32>),
     End,
@@ -128,7 +131,11 @@ impl RenderingEngine for Engine {
                 error!("Error waiting on fence: {err}");
             }
             self.device.reset_fences(&fences).unwrap();
-            let suboptimal = self.swapchain.next(frame.present_semaphore).unwrap_or(true);
+            let suboptimal = match self.swapchain.next(frame.present_semaphore) {
+                Ok(val) => val,
+                Err(e) if e == vk::Result::SUBOPTIMAL_KHR => false,
+                Err(e) => panic!("Failed to acquire swapchain image: {e:?}"),
+            };
             if suboptimal {
                 todo!("Recreate swapchain")
             }
@@ -155,23 +162,6 @@ impl RenderingEngine for Engine {
                 **self.depth_image,
             );
 
-            for buf in &frame.secondary_buffers {
-                let colors = [self.surface_format.format];
-                let mut rendering_info = vk::CommandBufferInheritanceRenderingInfo::builder()
-                    .color_attachment_formats(&colors)
-                    .rasterization_samples(vk::SampleCountFlags::TYPE_1)
-                    .depth_attachment_format(self.depth_format);
-                let inheritance_info =
-                    vk::CommandBufferInheritanceInfo::builder().push_next(&mut rendering_info);
-                let begin_info = vk::CommandBufferBeginInfo::builder()
-                    .inheritance_info(&inheritance_info)
-                    .flags(
-                        vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT
-                            | vk::CommandBufferUsageFlags::RENDER_PASS_CONTINUE,
-                    );
-                self.device.begin_command_buffer(*buf, &begin_info).unwrap();
-            }
-
             begin(
                 self.swapchain.get_current_image_view(),
                 self.depth_view,
@@ -186,6 +176,8 @@ impl RenderingEngine for Engine {
                         *view,
                         *projection,
                         frame.global_descriptor,
+                        self.surface_format.format,
+                        self.depth_format,
                     ))
                     .unwrap();
             }
@@ -232,9 +224,6 @@ impl RenderingEngine for Engine {
             .build()];
 
         unsafe {
-            for buffer in &frame.secondary_buffers {
-                self.device.end_command_buffer(*buffer).unwrap();
-            }
             self.device
                 .cmd_execute_commands(frame.primary_buffer, &frame.secondary_buffers);
             self.device.cmd_end_rendering(frame.primary_buffer);
@@ -381,12 +370,33 @@ fn render_thread(receiver: Receiver<RenderCommand>, device: &ash::Device, barrie
     while let Ok(command) = receiver.recv() {
         match command {
             // initialize some per frame data for this thread
-            RenderCommand::Begin(cmd_buf, view_matrix, proj, desc) => {
+            RenderCommand::Begin(
+                cmd_buf,
+                view_matrix,
+                proj,
+                desc,
+                surface_format,
+                depth_format,
+            ) => unsafe {
                 cmd = cmd_buf;
                 view = view_matrix;
                 projection = proj;
                 global_descriptors[0] = desc;
-            }
+                let colors = [surface_format];
+                let mut rendering_info = vk::CommandBufferInheritanceRenderingInfo::builder()
+                    .color_attachment_formats(&colors)
+                    .rasterization_samples(vk::SampleCountFlags::TYPE_1)
+                    .depth_attachment_format(depth_format);
+                let inheritance_info =
+                    vk::CommandBufferInheritanceInfo::builder().push_next(&mut rendering_info);
+                let begin_info = vk::CommandBufferBeginInfo::builder()
+                    .inheritance_info(&inheritance_info)
+                    .flags(
+                        vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT
+                            | vk::CommandBufferUsageFlags::RENDER_PASS_CONTINUE,
+                    );
+                device.begin_command_buffer(cmd, &begin_info).unwrap();
+            },
 
             // record the rendering commands
             RenderCommand::Render(mesh, material, transform) => {
@@ -428,7 +438,8 @@ fn render_thread(receiver: Receiver<RenderCommand>, device: &ash::Device, barrie
             }
 
             // reset pointers and synchronize with the other threads using the barrier
-            RenderCommand::End => {
+            RenderCommand::End => unsafe {
+                device.end_command_buffer(cmd).unwrap();
                 last_mesh = std::ptr::null();
                 last_material = std::ptr::null();
                 cmd = vk::CommandBuffer::null();

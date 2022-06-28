@@ -202,7 +202,7 @@ impl Swapchain {
             .queue_family_indices(queue_families)
             .pre_transform(capabilities.current_transform)
             .composite_alpha(vk::CompositeAlphaFlagsKHR::OPAQUE)
-            .present_mode(get_present_mode(physical_device, surface, surface_loader)?);
+            .present_mode(get_present_mode(physical_device, surface, surface_loader, settings)?);
         let swapchain = loader.create_swapchain(&create_info, None)?;
 
         let images = read_into_uninitialized_small_vector(|count, data| {
@@ -490,16 +490,24 @@ unsafe fn get_present_mode(
     physical_device: vk::PhysicalDevice,
     surface: vk::SurfaceKHR,
     surface_loader: &ash::extensions::khr::Surface,
+    settings: &GraphicsSettings,
 ) -> VkResult<vk::PresentModeKHR> {
+    let target = if settings.vsync {
+        vk::PresentModeKHR::MAILBOX
+    } else {
+        vk::PresentModeKHR::IMMEDIATE
+    };
+
     Ok(
         if let Some(mode) = surface_loader
             .get_physical_device_surface_present_modes(physical_device, surface)?
             .into_iter()
-            .find(|mode| *mode == vk::PresentModeKHR::MAILBOX)
+            .find(|mode| *mode == target)
         {
+            info!("Using surface presentation mode: {mode:?}");
             mode
         } else {
-            warn!("Mailbox presentation mode not supported, falling back to FIFO");
+            warn!("Requested presentation mode {target:?} not supported, falling back to FIFO");
             vk::PresentModeKHR::FIFO
         },
     )
