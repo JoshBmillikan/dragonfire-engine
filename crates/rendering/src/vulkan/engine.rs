@@ -25,10 +25,12 @@ use crate::vulkan::engine::pipeline::{cleanup_cache, create_pipeline};
 use crate::vulkan::mesh::Vertex;
 use crate::vulkan::texture::Texture;
 use crate::{cull_test, Material, Mesh, RenderingEngine};
+use crate::vulkan::engine::swapchain::Swapchain;
 
 pub(crate) mod alloc;
 mod init;
 mod pipeline;
+mod swapchain;
 
 const FRAMES_IN_FLIGHT: usize = 2;
 
@@ -47,11 +49,7 @@ pub struct Engine {
     surface: vk::SurfaceKHR,
     graphics_queue: vk::Queue,
     surface_format: vk::SurfaceFormatKHR,
-    swapchain: vk::SwapchainKHR,
-    swapchain_loader: Arc<ash::extensions::khr::Swapchain>,
-    swapchain_extent: vk::Extent2D,
-    swapchain_images: Vec<vk::Image>,
-    swapchain_views: Vec<vk::ImageView>,
+    swapchain: ManuallyDrop<Swapchain>,
     allocator: Arc<Allocator>,
     frames: [Frame; FRAMES_IN_FLIGHT],
     render_channels: SmallVec<[Sender<RenderCommand>; 12]>,
@@ -62,7 +60,6 @@ pub struct Engine {
     last_mesh: *const Mesh,
     last_material: *const Material,
     current_thread: usize,
-    current_image_index: u32,
     utility_pool: vk::CommandPool,
     global_descriptor_layout: vk::DescriptorSetLayout,
     descriptor_pool: vk::DescriptorPool,
@@ -131,19 +128,10 @@ impl RenderingEngine for Engine {
                 error!("Error waiting on fence: {err}");
             }
             self.device.reset_fences(&fences).unwrap();
-            let (index, _suboptimal) = self
-                .swapchain_loader
-                .acquire_next_image(
-                    self.swapchain,
-                    u64::MAX,
-                    frame.present_semaphore,
-                    vk::Fence::null(),
-                )
-                .expect("Failed to acquire swapchain image");
-            if _suboptimal {
-                warn!("Swapchain is suboptimal");
+            let suboptimal = self.swapchain.next(frame.present_semaphore).unwrap_or(true);
+            if suboptimal {
+                todo!("Recreate swapchain")
             }
-            self.current_image_index = index;
             frame.ubo.view = *view;
             frame.ubo.projection = proj;
             self.device
@@ -163,7 +151,7 @@ impl RenderingEngine for Engine {
             pre_image_transition(
                 &self.device,
                 frame.primary_buffer,
-                self.swapchain_images[self.current_image_index as usize],
+                self.swapchain.get_current_image(),
                 **self.depth_image,
             );
 
@@ -185,9 +173,9 @@ impl RenderingEngine for Engine {
             }
 
             begin(
-                self.swapchain_views[index as usize],
+                self.swapchain.get_current_image_view(),
                 self.depth_view,
-                self.swapchain_extent,
+                self.swapchain.extent,
                 frame.primary_buffer,
                 &self.device,
             );
@@ -233,7 +221,7 @@ impl RenderingEngine for Engine {
             .src_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_WRITE)
             .old_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
             .new_layout(vk::ImageLayout::PRESENT_SRC_KHR)
-            .image(self.swapchain_images[self.current_image_index as usize])
+            .image(self.swapchain.get_current_image())
             .subresource_range(vk::ImageSubresourceRange {
                 aspect_mask: vk::ImageAspectFlags::COLOR,
                 base_mip_level: 0,
@@ -271,9 +259,9 @@ impl RenderingEngine for Engine {
                 render_semaphore: frame.graphics_semaphore,
                 present_semaphore: frame.present_semaphore,
                 cmd: frame.primary_buffer,
-                swapchain: self.swapchain,
-                swapchain_loader: self.swapchain_loader.clone(),
-                image_index: self.current_image_index,
+                swapchain: self.swapchain.swapchain,
+                swapchain_loader: self.swapchain.loader.clone(),
+                image_index: self.swapchain.current_image_index as u32,
                 signal_fence: frame.fence,
             })
             .unwrap();
@@ -281,7 +269,7 @@ impl RenderingEngine for Engine {
     }
 
     fn resize(&mut self, width: u32, height: u32) {
-        if self.swapchain_extent.width == width && self.swapchain_extent.height == height {
+        if self.swapchain.extent.width == width && self.swapchain.extent.height == height {
             return;
         }
         unsafe {
@@ -300,6 +288,7 @@ impl RenderingEngine for Engine {
                 normal: nalgebra::UnitVector3::new_normalize(nalgebra::Vector3::from(
                     vertex.normal,
                 )),
+                uv: Default::default(), //todo
             })
             .collect();
         let indices = obj.indices.into_iter().map(|index| index as u32).collect();
@@ -335,7 +324,7 @@ impl RenderingEngine for Engine {
             &self.device,
             self.surface_format.format,
             self.depth_format,
-            self.swapchain_extent,
+            self.swapchain.extent,
             data,
             self.global_descriptor_layout,
         )?;
@@ -402,40 +391,39 @@ fn render_thread(receiver: Receiver<RenderCommand>, device: &ash::Device, barrie
             // record the rendering commands
             RenderCommand::Render(mesh, material, transform) => {
                 debug_assert_ne!(cmd, vk::CommandBuffer::null());
-                if !cull_test(&mesh, &transform, &view, &projection) {
-                    continue;
-                }
-                unsafe {
-                    if !std::ptr::eq(mesh.as_ref(), last_mesh) {
-                        last_mesh = mesh.as_ref();
-                        mesh.bind(device, cmd);
-                    }
+                if cull_test(&mesh, &transform, &view, &projection) {
+                    unsafe {
+                        if !std::ptr::eq(mesh.as_ref(), last_mesh) {
+                            last_mesh = mesh.as_ref();
+                            mesh.bind(device, cmd);
+                        }
 
-                    if !std::ptr::eq(material.as_ref(), last_material) {
-                        last_material = material.as_ref();
-                        material.bind(device, cmd);
-                        device.cmd_bind_descriptor_sets(
+                        if !std::ptr::eq(material.as_ref(), last_material) {
+                            last_material = material.as_ref();
+                            material.bind(device, cmd);
+                            device.cmd_bind_descriptor_sets(
+                                cmd,
+                                vk::PipelineBindPoint::GRAPHICS,
+                                material.get_pipeline_layout(),
+                                0,
+                                &global_descriptors,
+                                &[],
+                            );
+                        }
+
+                        device.cmd_push_constants(
                             cmd,
-                            vk::PipelineBindPoint::GRAPHICS,
                             material.get_pipeline_layout(),
+                            vk::ShaderStageFlags::VERTEX,
                             0,
-                            &global_descriptors,
-                            &[],
+                            std::slice::from_raw_parts(
+                                transform.as_ptr() as *const u8,
+                                std::mem::size_of::<Matrix4<f32>>(),
+                            ),
                         );
+
+                        device.cmd_draw_indexed(cmd, mesh.get_index_count(), 1, 0, 0, 0);
                     }
-
-                    device.cmd_push_constants(
-                        cmd,
-                        material.get_pipeline_layout(),
-                        vk::ShaderStageFlags::VERTEX,
-                        0,
-                        std::slice::from_raw_parts(
-                            transform.as_ptr() as *const u8,
-                            std::mem::size_of::<Matrix4<f32>>(),
-                        ),
-                    );
-
-                    device.cmd_draw_indexed(cmd, mesh.get_index_count(), 1, 0, 0, 0);
                 }
             }
 
@@ -633,12 +621,7 @@ impl Drop for Engine {
             self.device
                 .destroy_descriptor_set_layout(self.global_descriptor_layout, None);
 
-            for view in &self.swapchain_views {
-                self.device.destroy_image_view(*view, None);
-            }
-
-            self.swapchain_loader
-                .destroy_swapchain(self.swapchain, None);
+            ManuallyDrop::drop(&mut self.swapchain);
 
             if let Some(alloc) = Arc::get_mut(&mut self.allocator) {
                 alloc.destroy();

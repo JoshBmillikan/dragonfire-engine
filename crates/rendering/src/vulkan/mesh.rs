@@ -6,6 +6,7 @@ use ash::vk;
 use ash::vk::DeviceSize;
 use log::trace;
 use memoffset::offset_of;
+use smallvec::{smallvec, SmallVec};
 use vk_mem::Allocator;
 
 use crate::vulkan::engine::alloc::Buffer;
@@ -22,7 +23,7 @@ pub struct Mesh {
 pub struct Vertex {
     pub position: nalgebra::Vector3<f32>,
     pub normal: nalgebra::UnitVector3<f32>,
-    //uv: nalgebra::Vector2<f32>
+    pub uv: nalgebra::Vector2<f32>,
 }
 
 impl Mesh {
@@ -145,16 +146,17 @@ impl Mesh {
 
 impl Vertex {
     /// Gets the vertex input and attribute descriptions
-    pub(crate) fn get_vertex_description() -> (Vec<vk::VertexInputBindingDescription>, Vec<vk::VertexInputAttributeDescription>) {
-        let input = vec![
-            vk::VertexInputBindingDescription::builder()
-                .binding(0)
-                .stride(std::mem::size_of::<Vertex>() as u32)
-                .input_rate(vk::VertexInputRate::VERTEX)
-                .build()
-        ];
+    pub(crate) fn get_vertex_description() -> (
+        SmallVec<[vk::VertexInputBindingDescription; 1]>,
+        SmallVec<[vk::VertexInputAttributeDescription; 4]>,
+    ) {
+        let input = smallvec![vk::VertexInputBindingDescription::builder()
+            .binding(0)
+            .stride(std::mem::size_of::<Vertex>() as u32)
+            .input_rate(vk::VertexInputRate::VERTEX)
+            .build()];
 
-        let attributes = vec![
+        let attributes = smallvec![
             vk::VertexInputAttributeDescription::builder()
                 .binding(0)
                 .location(0)
@@ -167,6 +169,12 @@ impl Vertex {
                 .format(vk::Format::R32G32B32_SFLOAT)
                 .offset(offset_of!(Vertex, normal) as u32)
                 .build(),
+            vk::VertexInputAttributeDescription::builder()
+                .binding(0)
+                .location(2)
+                .format(vk::Format::R32G32_SFLOAT)
+                .offset(offset_of!(Vertex, uv) as u32)
+                .build()
         ];
 
         (input, attributes)
