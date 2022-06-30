@@ -1,7 +1,7 @@
 use std::fs::File;
 
+use figment::providers::{Env, Format, Serialized, Toml};
 use figment::Figment;
-use figment::providers::{Env, Format, Serialized, Yaml};
 use log::{error, info};
 use once_cell::sync::Lazy;
 use parking_lot::RwLock;
@@ -22,7 +22,7 @@ impl Config {
     fn new() -> Config {
         let cfg = DIRS.project.config_dir();
         Figment::from(Serialized::defaults(Config::default()))
-            .merge(Yaml::file(cfg.join("game_settings.yaml")))
+            .merge(Toml::file(cfg.join("game_settings.toml")))
             .merge(Env::prefixed("DRAGONFIRE_"))
             .extract()
             .expect("Failed to load settings")
@@ -30,10 +30,11 @@ impl Config {
 
     pub fn save(&self) {
         let cfg = DIRS.project.config_dir().join("game_settings.toml");
-        if let Err(e) = File::open(&cfg).map(|file| serde_yaml::to_writer(file, self)) {
-            error!("Could not save config file: {e}");
-        } else {
-            info!("Saved config file to {cfg:?}");
+        match toml::to_string(self) {
+            Ok(str) => if let Err(e) = std::fs::write(&cfg, str) {
+                error!("Error writing config file: {e}");
+            },
+            Err(e) => error!("Error serializing config: {e}")
         }
     }
 }

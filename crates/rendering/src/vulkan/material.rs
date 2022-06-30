@@ -8,6 +8,7 @@ use parking_lot::Mutex;
 
 use crate::vulkan::material::creation::load_material;
 use crate::vulkan::material::database::CONN;
+use crate::vulkan::texture::Texture;
 
 mod database;
 mod creation;
@@ -16,6 +17,7 @@ pub struct Material {
     pub pipeline: vk::Pipeline,
     pub layout: vk::PipelineLayout,
     pub device: Arc<Device>,
+    pub texture: Option<Texture>,
 }
 
 static CACHE: Lazy<Mutex<HashMap<String, Weak<Material>>>> =

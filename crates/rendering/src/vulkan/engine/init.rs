@@ -6,19 +6,20 @@ use std::sync::{Arc, Barrier};
 use std::thread::{available_parallelism, spawn};
 
 use ash::prelude::VkResult;
-use ash::vk;
 use ash::vk::{DeviceSize, PhysicalDeviceType};
+use ash::{vk, Device};
 use itertools::Itertools;
 use log::{info, warn};
 use raw_window_handle::HasRawWindowHandle;
 use smallvec::SmallVec;
 use vk_mem::Allocator;
 
-use crate::GraphicsSettings;
-use crate::vulkan::engine::{
-    debug_callback, Engine, Frame, FRAMES_IN_FLIGHT, presentation_thread, render_thread, Ubo,
-};
 use crate::vulkan::engine::alloc::{create_allocator, GpuObject, Image};
+use crate::vulkan::engine::swapchain::Swapchain;
+use crate::vulkan::engine::{
+    debug_callback, presentation_thread, render_thread, Engine, Frame, Ubo, FRAMES_IN_FLIGHT,
+};
+use crate::GraphicsSettings;
 
 impl Engine {
     /// Creates the vulkan rendering engine using a window handle and the graphics settings
@@ -32,7 +33,7 @@ impl Engine {
         let instance = create_instance(&entry, window)?;
 
         #[cfg(feature = "validation-layers")]
-            let debug_messenger = create_debug_messenger(&entry, &instance)?;
+        let debug_messenger = create_debug_messenger(&entry, &instance)?;
 
         let surface_loader = Box::new(ash::extensions::khr::Surface::new(&entry, &instance));
         let surface = ash_window::create_surface(&entry, &instance, window, None)?;
@@ -51,20 +52,16 @@ impl Engine {
         let presentation_queue = device.get_device_queue(queue_families[1], 0);
         let surface_format = get_surface_format(physical_device, surface, &surface_loader)?;
 
-        let swapchain_loader = Arc::new(ash::extensions::khr::Swapchain::new(&instance, &device));
-        let (swapchain, swapchain_extent) = create_swapchain(
-            &swapchain_loader,
+        let swapchain = ManuallyDrop::new(Swapchain::new(
+            &instance,
+            device.clone(),
             physical_device,
             surface,
             &surface_loader,
             &queue_families,
             surface_format.format,
-            settings,
-        )?;
-        let swapchain_images = swapchain_loader.get_swapchain_images(swapchain)?;
-        info!("Using {} swapchain images", swapchain_images.len());
-        let swapchain_views =
-            create_swapchain_views(&swapchain_images, &device, surface_format.format)?;
+            settings
+        )?);
 
         let thread_count = 1.max(
             // half the number of cores, minimum of 1 thread
@@ -120,13 +117,14 @@ impl Engine {
 
         let depth_format = get_depth_format(physical_device, &instance, vk::ImageTiling::OPTIMAL)?;
         let (depth_image, depth_view) =
-            create_depth_image(&device, depth_format, swapchain_extent, allocator.clone())?;
+            create_depth_image(&device, depth_format, swapchain.extent, allocator.clone())?;
 
         info!("Rendering engine initialization finished");
         Ok(Engine {
             frame_count: 0,
             _entry: entry,
             instance,
+            physical_device,
             device,
             surface_loader,
             #[cfg(feature = "validation-layers")]
@@ -135,10 +133,6 @@ impl Engine {
             graphics_queue,
             surface_format,
             swapchain,
-            swapchain_loader,
-            swapchain_extent,
-            swapchain_images,
-            swapchain_views,
             allocator,
             frames: frames.into_inner().unwrap(),
             render_channels,
@@ -149,13 +143,81 @@ impl Engine {
             last_mesh: std::ptr::null(),
             last_material: std::ptr::null(),
             current_thread: 0,
-            current_image_index: 0,
             utility_pool,
             global_descriptor_layout,
             descriptor_pool,
             depth_format,
             depth_image: ManuallyDrop::new(depth_image),
             depth_view,
+        })
+    }
+}
+
+impl Swapchain {
+    #[allow(clippy::too_many_arguments)]
+    pub unsafe fn new(
+        instance: &ash::Instance,
+        device: Arc<Device>,
+        physical_device: vk::PhysicalDevice,
+        surface: vk::SurfaceKHR,
+        surface_loader: &ash::extensions::khr::Surface,
+        queue_families: &[u32],
+        image_format: vk::Format,
+        settings: &GraphicsSettings,
+    ) -> Result<Self, Box<dyn Error>> {
+        let loader = Arc::new(ash::extensions::khr::Swapchain::new(instance, &device));
+        let capabilities =
+            surface_loader.get_physical_device_surface_capabilities(physical_device, surface)?;
+        let extent = if capabilities.current_extent.height == u32::MAX {
+            vk::Extent2D {
+                width: settings.resolution[0],
+                height: settings.resolution[1],
+            }
+        } else {
+            capabilities.current_extent
+        };
+
+        let image_count = if capabilities.max_image_count == 0 {
+            capabilities.min_image_count + 1
+        } else {
+            capabilities
+                .max_image_count
+                .min(capabilities.min_image_count + 1)
+        };
+
+        let share_mode = if queue_families[0] == queue_families[1] {
+            vk::SharingMode::EXCLUSIVE
+        } else {
+            vk::SharingMode::CONCURRENT
+        };
+
+        let create_info = vk::SwapchainCreateInfoKHR::builder()
+            .surface(surface)
+            .min_image_count(image_count)
+            .image_format(image_format)
+            .image_extent(extent)
+            .image_array_layers(1)
+            .image_usage(vk::ImageUsageFlags::COLOR_ATTACHMENT)
+            .image_sharing_mode(share_mode)
+            .queue_family_indices(queue_families)
+            .pre_transform(capabilities.current_transform)
+            .composite_alpha(vk::CompositeAlphaFlagsKHR::OPAQUE)
+            .present_mode(get_present_mode(physical_device, surface, surface_loader, settings)?);
+        let swapchain = loader.create_swapchain(&create_info, None)?;
+
+        let images = read_into_uninitialized_small_vector(|count, data| {
+            (loader.fp().get_swapchain_images_khr)(loader.device(), swapchain, count, data)
+        })?;
+        let views = create_swapchain_views(&images, &device, image_format)?;
+
+        Ok(Swapchain {
+            swapchain,
+            loader,
+            images,
+            views,
+            extent,
+            current_image_index: 0,
+            device
         })
     }
 }
@@ -200,7 +262,7 @@ unsafe fn create_instance(
     }
     let layers = vec![
         #[cfg(feature = "validation-layers")]
-            CString::new("VK_LAYER_KHRONOS_validation").unwrap(),
+        CString::new("VK_LAYER_KHRONOS_validation").unwrap(),
     ];
     let layers = layers
         .iter()
@@ -222,10 +284,10 @@ unsafe fn create_instance(
         .enabled_extension_names(&extensions);
 
     #[cfg(feature = "validation-layers")]
-        let mut debug = get_debug_info();
+    let mut debug = get_debug_info();
 
     #[cfg(feature = "validation-layers")]
-        let create_info = create_info.push_next(&mut debug);
+    let create_info = create_info.push_next(&mut debug);
 
     Ok(Box::new(entry.create_instance(&create_info, None)?))
 }
@@ -239,18 +301,25 @@ unsafe fn get_physical_device(
     surface_loader: &ash::extensions::khr::Surface,
     extensions: &[&CStr],
 ) -> Result<vk::PhysicalDevice, Box<dyn Error>> {
-    let device = instance
-        .enumerate_physical_devices()?
+    let devices = read_into_uninitialized_small_vector(|count, data| {
+        (instance.fp_v1_0().enumerate_physical_devices)(instance.handle(), count, data)
+    })?;
+    let device = devices
         .into_iter()
         .filter(|device| is_valid_device(*device, instance, extensions))
         .filter(|device| {
             let mut has_graphics = false;
             let mut has_present = false;
-            for (index, prop) in instance
-                .get_physical_device_queue_family_properties(*device)
-                .into_iter()
-                .enumerate()
-            {
+            let props = read_into_uninitialized_small_vector(|count, data| {
+                (instance
+                    .fp_v1_0()
+                    .get_physical_device_queue_family_properties)(
+                    *device, count, data
+                );
+                vk::Result::SUCCESS
+            })
+            .unwrap();
+            for (index, prop) in props.into_iter().enumerate() {
                 if prop.queue_flags & vk::QueueFlags::GRAPHICS != vk::QueueFlags::empty() {
                     has_graphics = true;
                 }
@@ -291,11 +360,20 @@ unsafe fn is_valid_device(
     let mut dyn_render_features = vk::PhysicalDeviceDynamicRenderingFeatures::builder();
     let mut features2 = vk::PhysicalDeviceFeatures2::builder().push_next(&mut dyn_render_features);
     instance.get_physical_device_features2(device, &mut features2);
-    if dyn_render_features.dynamic_rendering != vk::TRUE {
+    if features2.features.sampler_anisotropy != vk::TRUE
+        || dyn_render_features.dynamic_rendering != vk::TRUE
+    {
         return false;
     }
 
-    if let Ok(props) = instance.enumerate_device_extension_properties(device) {
+    if let Ok(props) = read_into_uninitialized_small_vector(|count, data| {
+        (instance.fp_v1_0().enumerate_device_extension_properties)(
+            device,
+            std::ptr::null(),
+            count,
+            data,
+        )
+    }) {
         for ext in extensions {
             if !props
                 .iter()
@@ -320,11 +398,14 @@ unsafe fn get_queue_families(
 ) -> Result<[u32; 2], Box<dyn Error>> {
     let mut graphics = None;
     let mut present = None;
-    for (index, prop) in instance
-        .get_physical_device_queue_family_properties(physical_device)
-        .into_iter()
-        .enumerate()
-    {
+    let props = read_into_uninitialized_small_vector(|count, data| {
+        (instance
+            .fp_v1_0()
+            .get_physical_device_queue_family_properties)(physical_device, count, data);
+        vk::Result::SUCCESS
+    })
+    .unwrap();
+    for (index, prop) in props.into_iter().enumerate() {
         if prop.queue_flags & vk::QueueFlags::GRAPHICS != vk::QueueFlags::empty() {
             graphics = Some(index as u32);
         }
@@ -371,13 +452,16 @@ unsafe fn create_device(
         })
         .collect::<SmallVec<[_; 2]>>();
 
-    let mut features =
+    let mut rendering_features =
         vk::PhysicalDeviceDynamicRenderingFeatures::builder().dynamic_rendering(true);
+
+    let features = vk::PhysicalDeviceFeatures::builder().sampler_anisotropy(true);
 
     let create_info = vk::DeviceCreateInfo::builder()
         .enabled_extension_names(&extensions)
-        .push_next(&mut features)
-        .queue_create_infos(&queue_info);
+        .push_next(&mut rendering_features)
+        .queue_create_infos(&queue_info)
+        .enabled_features(&features);
     Ok(Arc::new(instance.create_device(
         physical_device,
         &create_info,
@@ -401,73 +485,29 @@ unsafe fn get_surface_format(
         .ok_or("Failed to find valid surface format")?)
 }
 
-/// Creates the swapchain along with its extent
-unsafe fn create_swapchain(
-    loader: &ash::extensions::khr::Swapchain,
-    physical_device: vk::PhysicalDevice,
-    surface: vk::SurfaceKHR,
-    surface_loader: &ash::extensions::khr::Surface,
-    queue_families: &[u32],
-    image_format: vk::Format,
-    settings: &GraphicsSettings,
-) -> Result<(vk::SwapchainKHR, vk::Extent2D), Box<dyn Error>> {
-    let capabilities =
-        surface_loader.get_physical_device_surface_capabilities(physical_device, surface)?;
-    let extent = if capabilities.current_extent.height == u32::MAX {
-        vk::Extent2D {
-            width: settings.resolution[0],
-            height: settings.resolution[1],
-        }
-    } else {
-        capabilities.current_extent
-    };
-
-    let image_count = if capabilities.max_image_count == 0 {
-        capabilities.min_image_count + 1
-    } else {
-        capabilities
-            .max_image_count
-            .min(capabilities.min_image_count + 1)
-    };
-
-    let share_mode = if queue_families[0] == queue_families[1] {
-        vk::SharingMode::EXCLUSIVE
-    } else {
-        vk::SharingMode::CONCURRENT
-    };
-
-    let create_info = vk::SwapchainCreateInfoKHR::builder()
-        .surface(surface)
-        .min_image_count(image_count)
-        .image_format(image_format)
-        .image_extent(extent)
-        .image_array_layers(1)
-        .image_usage(vk::ImageUsageFlags::COLOR_ATTACHMENT)
-        .image_sharing_mode(share_mode)
-        .queue_family_indices(queue_families)
-        .pre_transform(capabilities.current_transform)
-        .composite_alpha(vk::CompositeAlphaFlagsKHR::OPAQUE)
-        .present_mode(get_present_mode(physical_device, surface, surface_loader)?);
-    let swapchain = loader.create_swapchain(&create_info, None)?;
-
-    Ok((swapchain, extent))
-}
-
 /// Gets the presentation mode for the surface
 unsafe fn get_present_mode(
     physical_device: vk::PhysicalDevice,
     surface: vk::SurfaceKHR,
     surface_loader: &ash::extensions::khr::Surface,
+    settings: &GraphicsSettings,
 ) -> VkResult<vk::PresentModeKHR> {
+    let target = if settings.vsync {
+        vk::PresentModeKHR::MAILBOX
+    } else {
+        vk::PresentModeKHR::IMMEDIATE
+    };
+
     Ok(
         if let Some(mode) = surface_loader
             .get_physical_device_surface_present_modes(physical_device, surface)?
             .into_iter()
-            .find(|mode| *mode == vk::PresentModeKHR::MAILBOX)
+            .find(|mode| *mode == target)
         {
+            info!("Using surface presentation mode: {mode:?}");
             mode
         } else {
-            warn!("Mailbox presentation mode not supported, falling back to FIFO");
+            warn!("Requested presentation mode {target:?} not supported, falling back to FIFO");
             vk::PresentModeKHR::FIFO
         },
     )
@@ -478,7 +518,7 @@ unsafe fn create_swapchain_views(
     images: &[vk::Image],
     device: &ash::Device,
     format: vk::Format,
-) -> VkResult<Vec<vk::ImageView>> {
+) -> VkResult<SmallVec<[vk::ImageView;8]>> {
     images
         .iter()
         .map(|image| {
@@ -703,7 +743,8 @@ fn get_debug_info() -> vk::DebugUtilsMessengerCreateInfoEXT {
         .message_severity(
             vk::DebugUtilsMessageSeverityFlagsEXT::VERBOSE
                 | vk::DebugUtilsMessageSeverityFlagsEXT::WARNING
-                | vk::DebugUtilsMessageSeverityFlagsEXT::ERROR,
+                | vk::DebugUtilsMessageSeverityFlagsEXT::ERROR
+                | vk::DebugUtilsMessageSeverityFlagsEXT::INFO,
         )
         .message_type(
             vk::DebugUtilsMessageTypeFlagsEXT::GENERAL
@@ -712,4 +753,25 @@ fn get_debug_info() -> vk::DebugUtilsMessengerCreateInfoEXT {
         )
         .pfn_user_callback(Some(debug_callback))
         .build()
+}
+
+/// copy of the internal ash function, but with a small vec instead of a regular vec
+unsafe fn read_into_uninitialized_small_vector<N: Copy + Default + TryInto<usize>, T>(
+    f: impl Fn(&mut N, *mut T) -> vk::Result,
+) -> VkResult<SmallVec<[T; 8]>>
+where
+    <N as TryInto<usize>>::Error: std::fmt::Debug,
+{
+    loop {
+        let mut count = N::default();
+        f(&mut count, std::ptr::null_mut()).result()?;
+        let mut data =
+            SmallVec::with_capacity(count.try_into().expect("`N` failed to convert to `usize`"));
+
+        let err_code = f(&mut count, data.as_mut_ptr());
+        if err_code != vk::Result::INCOMPLETE {
+            data.set_len(count.try_into().expect("`N` failed to convert to `usize`"));
+            break err_code.result_with_success(data);
+        }
+    }
 }

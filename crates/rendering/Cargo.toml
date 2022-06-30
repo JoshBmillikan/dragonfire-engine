@@ -25,6 +25,7 @@ scopeguard = "1.1.0"
 rusqlite = { version = "0.27.0", features = ["blob", "bundled"] }
 spirv-reflect = "0.2.3"
 memoffset = "0.6.5"
+png = "0.17.5"
 
 [features]
 default = ['vulkan', 'validation-layers']

@@ -1,10 +1,9 @@
-use std::ops::Add;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 
 use log::info;
-use nalgebra::{Isometry3, Point3, Quaternion, Unit, UnitQuaternion, Vector3};
+use nalgebra::{Isometry3, Point3, UnitQuaternion, Vector3};
 use uom::si::f64::Time;
 use uom::si::time::second;
 use winit::event::{Event, WindowEvent};
