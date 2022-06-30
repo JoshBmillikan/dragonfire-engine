@@ -2,7 +2,7 @@ use std::error::Error;
 use std::path::Path;
 use std::sync::Arc;
 
-use nalgebra::{Isometry3, Matrix4, Perspective3};
+use nalgebra::{Isometry3, Matrix4, Orthographic3, Perspective3};
 use raw_window_handle::HasRawWindowHandle;
 use serde::{Deserialize, Serialize};
 use uom::si::angle::degree;
@@ -41,6 +41,7 @@ pub struct GraphicsSettings {
 pub struct Camera {
     pub view: Isometry3<f32>,
     pub projection: Perspective3<f32>,
+    pub orthographic: Orthographic3<f32>,
 }
 
 impl Camera {
@@ -51,9 +52,18 @@ impl Camera {
             0.1,
             1000.,
         );
+        let orthographic = Orthographic3::new(
+            0.,
+            settings.resolution[0] as f32,
+            0.,
+            settings.resolution[1] as f32,
+            0.1,
+            1000.,
+        );
         Camera {
             view: Default::default(),
             projection,
+            orthographic,
         }
     }
 }
@@ -74,7 +84,7 @@ impl Default for GraphicsSettings {
         GraphicsSettings {
             resolution: [1920, 1080],
             fov: Angle::new::<degree>(45.),
-            vsync: true
+            vsync: false,
         }
     }
 }

@@ -12,7 +12,7 @@ use std::thread::JoinHandle;
 use ash::vk;
 use ash::vk::DependencyFlags;
 use crossbeam_channel::{Receiver, Sender};
-use log::{error, info, log, warn, Level};
+use log::{error, info, log, Level};
 use nalgebra::{Matrix4, Perspective3};
 use obj::{load_obj, Obj};
 use once_cell::sync::Lazy;
@@ -369,7 +369,7 @@ fn render_thread(receiver: Receiver<RenderCommand>, device: &ash::Device, barrie
     let mut global_descriptors = [vk::DescriptorSet::null()];
     while let Ok(command) = receiver.recv() {
         match command {
-            // initialize some per frame data for this thread
+            // initialize some per frame data for this thread and begin the command buffer
             RenderCommand::Begin(
                 cmd_buf,
                 view_matrix,
@@ -437,14 +437,14 @@ fn render_thread(receiver: Receiver<RenderCommand>, device: &ash::Device, barrie
                 }
             }
 
-            // reset pointers and synchronize with the other threads using the barrier
+            // end the command buffer, reset pointers, and synchronize with the other threads using the barrier
             RenderCommand::End => unsafe {
                 device.end_command_buffer(cmd).unwrap();
                 last_mesh = std::ptr::null();
                 last_material = std::ptr::null();
                 cmd = vk::CommandBuffer::null();
                 barrier.wait();
-            }
+            },
         }
     }
 }
