@@ -8,17 +8,17 @@ use std::thread::{available_parallelism, spawn};
 use ash::prelude::VkResult;
 use ash::vk::{DeviceSize, PhysicalDeviceType};
 use ash::{vk, Device};
+use crossbeam_channel::Sender;
 use itertools::Itertools;
 use log::{info, warn};
+use parking_lot::Mutex;
 use raw_window_handle::HasRawWindowHandle;
 use smallvec::SmallVec;
 use vk_mem::Allocator;
 
 use crate::vulkan::engine::alloc::{create_allocator, GpuObject, Image};
 use crate::vulkan::engine::swapchain::Swapchain;
-use crate::vulkan::engine::{
-    debug_callback, presentation_thread, render_thread, Engine, Frame, Ubo, FRAMES_IN_FLIGHT,
-};
+use crate::vulkan::engine::{debug_callback, presentation_thread, render_thread, Engine, Frame, PresentData, Ubo, FRAMES_IN_FLIGHT, RenderResult};
 use crate::GraphicsSettings;
 
 impl Engine {
@@ -60,7 +60,9 @@ impl Engine {
             &surface_loader,
             &queue_families,
             surface_format.format,
-            settings
+            settings.vsync,
+            &settings.resolution,
+            None,
         )?);
 
         let thread_count = 1.max(
@@ -99,16 +101,8 @@ impl Engine {
             })
             .unzip();
 
-        let (present_channel, present_thread_handle) = {
-            let (sender, receiver) = crossbeam_channel::bounded(0);
-            let device = device.clone();
-            (
-                sender,
-                spawn(move || {
-                    presentation_thread(receiver, &device, graphics_queue, presentation_queue)
-                }),
-            )
-        };
+        let (present_channel, present_thread_handle) =
+            create_present_thread(device.clone(), graphics_queue, presentation_queue)?;
 
         let pool_info = vk::CommandPoolCreateInfo::builder()
             .queue_family_index(queue_families[0])
@@ -131,6 +125,7 @@ impl Engine {
             debug_messenger,
             surface,
             graphics_queue,
+            present_queue: presentation_queue,
             surface_format,
             swapchain,
             allocator,
@@ -149,8 +144,27 @@ impl Engine {
             depth_format,
             depth_image: ManuallyDrop::new(depth_image),
             depth_view,
+            queue_families,
+            resolution: settings.resolution,
+            vsync: settings.vsync,
         })
     }
+}
+
+fn create_present_thread(
+    device: Arc<Device>,
+    graphics_queue: vk::Queue,
+    presentation_queue: vk::Queue,
+) -> Result<(Sender<PresentData>, std::thread::JoinHandle<()>), Box<dyn Error>> {
+    let (sender, receiver) = crossbeam_channel::bounded(0);
+    Ok((
+        sender,
+        std::thread::Builder::new()
+            .name("render presentation thread".into())
+            .spawn(move || {
+                presentation_thread(receiver, &device, graphics_queue, presentation_queue)
+            })?,
+    ))
 }
 
 impl Swapchain {
@@ -163,15 +177,17 @@ impl Swapchain {
         surface_loader: &ash::extensions::khr::Surface,
         queue_families: &[u32],
         image_format: vk::Format,
-        settings: &GraphicsSettings,
+        vsync: bool,
+        resolution: &[u32; 2],
+        old: Option<&Swapchain>,
     ) -> Result<Self, Box<dyn Error>> {
         let loader = Arc::new(ash::extensions::khr::Swapchain::new(instance, &device));
         let capabilities =
             surface_loader.get_physical_device_surface_capabilities(physical_device, surface)?;
         let extent = if capabilities.current_extent.height == u32::MAX {
             vk::Extent2D {
-                width: settings.resolution[0],
-                height: settings.resolution[1],
+                width: resolution[0],
+                height: resolution[1],
             }
         } else {
             capabilities.current_extent
@@ -202,7 +218,16 @@ impl Swapchain {
             .queue_family_indices(queue_families)
             .pre_transform(capabilities.current_transform)
             .composite_alpha(vk::CompositeAlphaFlagsKHR::OPAQUE)
-            .present_mode(get_present_mode(physical_device, surface, surface_loader, settings)?);
+            .old_swapchain(
+                old.map(|it| it.swapchain)
+                    .unwrap_or(vk::SwapchainKHR::null()),
+            )
+            .present_mode(get_present_mode(
+                physical_device,
+                surface,
+                surface_loader,
+                vsync,
+            )?);
         let swapchain = loader.create_swapchain(&create_info, None)?;
 
         let images = read_into_uninitialized_small_vector(|count, data| {
@@ -217,7 +242,7 @@ impl Swapchain {
             views,
             extent,
             current_image_index: 0,
-            device
+            device,
         })
     }
 }
@@ -490,9 +515,9 @@ unsafe fn get_present_mode(
     physical_device: vk::PhysicalDevice,
     surface: vk::SurfaceKHR,
     surface_loader: &ash::extensions::khr::Surface,
-    settings: &GraphicsSettings,
+    vsync: bool,
 ) -> VkResult<vk::PresentModeKHR> {
-    let target = if settings.vsync {
+    let target = if vsync {
         vk::PresentModeKHR::MAILBOX
     } else {
         vk::PresentModeKHR::IMMEDIATE
@@ -518,7 +543,7 @@ unsafe fn create_swapchain_views(
     images: &[vk::Image],
     device: &ash::Device,
     format: vk::Format,
-) -> VkResult<SmallVec<[vk::ImageView;8]>> {
+) -> VkResult<SmallVec<[vk::ImageView; 8]>> {
     images
         .iter()
         .map(|image| {
@@ -609,6 +634,7 @@ unsafe fn create_frame(
         present_semaphore,
         ubo: ManuallyDrop::new(ubo),
         global_descriptor,
+        sync_data: Arc::new((Mutex::new(RenderResult::Ok), Default::default())),
     })
 }
 
@@ -677,7 +703,7 @@ unsafe fn get_depth_format(
         .ok_or_else(|| "Failed to find a valid depth image format".into())
 }
 
-unsafe fn create_depth_image(
+pub(super) unsafe fn create_depth_image(
     device: &ash::Device,
     format: vk::Format,
     extent: vk::Extent2D,

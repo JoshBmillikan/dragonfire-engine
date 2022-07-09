@@ -25,7 +25,8 @@ pub struct Game<R: RenderingEngine> {
 
 impl<R: RenderingEngine> Game<R> {
     pub fn new(mut rendering_engine: Box<R>, window: Window) -> Game<R> {
-        let mut camera = Camera::new(&CONFIG.read().graphics);
+        let cfg = &CONFIG.read().graphics;
+        let mut camera = Camera::new(cfg.resolution[0], cfg.resolution[1], cfg.fov);
         let path = PathBuf::from("./model.obj");
         let mesh = rendering_engine.load_model(&path).unwrap();
         let material = rendering_engine.load_material().unwrap();
@@ -63,7 +64,11 @@ impl<R: RenderingEngine> Game<R> {
             Event::WindowEvent {
                 event: WindowEvent::Resized(size),
                 window_id,
-            } if self.window.id() == window_id => self.rendering_engine.resize(size.width, size.height),
+            } if self.window.id() == window_id => {
+                self.camera = Camera::new(size.width, size.height, CONFIG.read().graphics.fov);
+                self.rendering_engine
+                    .resize(size.width, size.height)
+            }
 
             Event::DeviceEvent { .. } => {}
             Event::UserEvent(_) => {}
@@ -90,7 +95,8 @@ impl<R: RenderingEngine> Game<R> {
         self.world.add_unique(delta).unwrap();
         self.world.run(rotate).unwrap();
 
-        self.rendering_engine.begin_rendering(&self.camera.view.to_homogeneous(), &self.camera.projection);
+        self.rendering_engine
+            .begin_rendering(&self.camera.view.to_homogeneous(), &self.camera.projection);
 
         self.world
             .run(
@@ -113,7 +119,7 @@ impl<R: RenderingEngine> Game<R> {
 fn rotate(mut iso: ViewMut<Isometry3<f32>>, time: UniqueView<Time>) {
     for mut transform in (&mut iso).iter() {
         let (r, p, y) = transform.rotation.euler_angles();
-        let q =  UnitQuaternion::from_euler_angles(r, p + 1.,y);
+        let q = UnitQuaternion::from_euler_angles(r, p + 1., y);
         let r = transform.rotation;
         transform.rotation = r.slerp(&q, time.value as f32 / 60.);
     }
