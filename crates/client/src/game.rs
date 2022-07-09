@@ -21,6 +21,7 @@ pub struct Game<R: RenderingEngine> {
     rendering_engine: Box<R>,
     time: Instant,
     window: Window,
+    visible: bool,
 }
 
 impl<R: RenderingEngine> Game<R> {
@@ -34,7 +35,7 @@ impl<R: RenderingEngine> Game<R> {
         let mut iso = Isometry3::<f32>::default();
         iso.translation.x += 2.;
         iso.translation.z += -6.;
-        let mut iso2 = iso.clone();
+        let mut iso2 = iso;
         iso2.translation.x -= 4.;
         let eye = Point3::new(0.0, 0.0, 0.0);
         let up = Vector3::new(0., 1., 0.);
@@ -50,6 +51,7 @@ impl<R: RenderingEngine> Game<R> {
             rendering_engine,
             time: Instant::now(),
             window,
+            visible: true
         }
     }
 
@@ -72,14 +74,16 @@ impl<R: RenderingEngine> Game<R> {
 
             Event::DeviceEvent { .. } => {}
             Event::UserEvent(_) => {}
-            Event::Suspended => {}
-            Event::Resumed => {}
+            Event::Suspended => {self.visible = false;}
+            Event::Resumed => {self.visible = true;}
 
             Event::MainEventsCleared => {
-                let now = Instant::now();
-                let delta = Time::new::<second>((now - self.time).as_secs_f64());
-                self.tick(delta);
-                self.time = now;
+                if self.visible {
+                    let now = Instant::now();
+                    let delta = Time::new::<second>((now - self.time).as_secs_f64());
+                    self.tick(delta);
+                    self.time = now;
+                }
             }
 
             Event::LoopDestroyed => {
