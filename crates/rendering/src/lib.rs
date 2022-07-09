@@ -1,3 +1,5 @@
+extern crate core;
+
 use std::error::Error;
 use std::path::Path;
 use std::sync::Arc;
@@ -45,18 +47,18 @@ pub struct Camera {
 }
 
 impl Camera {
-    pub fn new(settings: &GraphicsSettings) -> Self {
+    pub fn new(width:u32, height: u32, fov: Angle) -> Self {
         let projection = Perspective3::new(
-            settings.resolution[0] as f32 / settings.resolution[1] as f32,
-            settings.fov.value,
+            width as f32 / height as f32,
+            fov.value,
             0.1,
             1000.,
         );
         let orthographic = Orthographic3::new(
             0.,
-            settings.resolution[0] as f32,
+            width as f32,
             0.,
-            settings.resolution[1] as f32,
+            height as f32,
             0.1,
             1000.,
         );
@@ -82,9 +84,9 @@ pub fn create_rendering_engine(
 impl Default for GraphicsSettings {
     fn default() -> Self {
         GraphicsSettings {
-            resolution: [1920, 1080],
+            resolution: [800, 600],
             fov: Angle::new::<degree>(45.),
-            vsync: false,
+            vsync: true,
         }
     }
 }

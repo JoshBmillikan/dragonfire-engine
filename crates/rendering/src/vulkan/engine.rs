@@ -1,4 +1,13 @@
-use ash::prelude::VkResult;
+use ash::vk;
+use ash::vk::DependencyFlags;
+use crossbeam_channel::{Receiver, Sender};
+use log::{error, info, log, Level};
+use nalgebra::{Matrix4, Perspective3};
+use obj::{load_obj, Obj};
+use once_cell::sync::Lazy;
+use parking_lot::{Condvar, Mutex};
+use smallvec::SmallVec;
+use std::default::Default;
 use std::error::Error;
 use std::ffi::CStr;
 use std::fs;
@@ -8,20 +17,12 @@ use std::mem::ManuallyDrop;
 use std::path::Path;
 use std::sync::{Arc, Barrier};
 use std::thread::JoinHandle;
-
-use ash::vk;
-use ash::vk::DependencyFlags;
-use crossbeam_channel::{Receiver, Sender};
-use log::{error, info, log, Level};
-use nalgebra::{Matrix4, Perspective3};
-use obj::{load_obj, Obj};
-use once_cell::sync::Lazy;
-use smallvec::SmallVec;
 use vk_mem::Allocator;
 
 use engine::filesystem::DIRS;
 
 use crate::vulkan::engine::alloc::{GpuObject, Image};
+use crate::vulkan::engine::init::create_depth_image;
 use crate::vulkan::engine::pipeline::{cleanup_cache, create_pipeline};
 use crate::vulkan::engine::swapchain::Swapchain;
 use crate::vulkan::mesh::Vertex;
@@ -49,6 +50,7 @@ pub struct Engine {
     ),
     surface: vk::SurfaceKHR,
     graphics_queue: vk::Queue,
+    present_queue: vk::Queue,
     surface_format: vk::SurfaceFormatKHR,
     swapchain: ManuallyDrop<Swapchain>,
     allocator: Arc<Allocator>,
@@ -67,6 +69,9 @@ pub struct Engine {
     depth_format: vk::Format,
     depth_image: ManuallyDrop<Image>,
     depth_view: vk::ImageView,
+    queue_families: [u32; 2],
+    resolution: [u32; 2],
+    vsync: bool,
 }
 
 #[derive(Debug)]
@@ -80,6 +85,14 @@ struct Frame {
     present_semaphore: vk::Semaphore,
     ubo: ManuallyDrop<GpuObject<Ubo>>,
     global_descriptor: vk::DescriptorSet,
+    sync_data: Arc<(Mutex<RenderResult>, Condvar)>,
+}
+
+#[derive(Eq, PartialEq, Debug)]
+enum RenderResult {
+    NotDone,
+    Ok,
+    OutOfDate,
 }
 
 #[derive(Debug)]
@@ -109,8 +122,10 @@ struct PresentData {
     swapchain_loader: Arc<ash::extensions::khr::Swapchain>,
     image_index: u32,
     signal_fence: vk::Fence,
+    sync_data: Arc<(Mutex<RenderResult>, Condvar)>,
 }
 
+/// Converts opengl to vulkan coordinate system
 #[rustfmt::skip]
 static COORDINATE_CORRECTION: Lazy<Matrix4<f32>> = Lazy::new(|| {
     Matrix4::from_row_slice(&[
@@ -130,15 +145,68 @@ impl RenderingEngine for Engine {
             if let Err(err) = self.device.wait_for_fences(&fences, true, u64::MAX) {
                 error!("Error waiting on fence: {err}");
             }
-            self.device.reset_fences(&fences).unwrap();
-            let suboptimal = match self.swapchain.next(frame.present_semaphore) {
-                Ok(val) => val,
-                Err(e) if e == vk::Result::SUBOPTIMAL_KHR => false,
-                Err(e) => panic!("Failed to acquire swapchain image: {e:?}"),
+            let suboptimal = {
+                let mut lock = frame.sync_data.0.lock();
+                frame
+                    .sync_data
+                    .1
+                    .wait_while(&mut lock, |e| *e == RenderResult::NotDone);
+                if *lock == RenderResult::OutOfDate {
+                    *lock = RenderResult::Ok;
+                    true
+                } else {
+                    *lock = RenderResult::NotDone;
+                    false
+                }
             };
-            if suboptimal {
-                todo!("Recreate swapchain")
+            if suboptimal
+                || match self.swapchain.next(frame.present_semaphore) {
+                    Ok(val) => val,
+                    Err(e)
+                        if e == vk::Result::SUBOPTIMAL_KHR
+                            || e == vk::Result::ERROR_OUT_OF_DATE_KHR =>
+                    {
+                        true
+                    }
+                    Err(e) => panic!("Failed to acquire swapchain image: {e:?}"),
+                }
+            {
+                self.device.device_wait_idle().unwrap();
+                let old = ManuallyDrop::take(&mut self.swapchain);
+                self.swapchain = ManuallyDrop::new(
+                    Swapchain::new(
+                        &self.instance,
+                        self.device.clone(),
+                        self.physical_device,
+                        self.surface,
+                        &self.surface_loader,
+                        &self.queue_families,
+                        self.surface_format.format,
+                        self.vsync,
+                        &self.resolution,
+                        Some(&old),
+                    )
+                    .expect("Failed to recreate swapchain"),
+                );
+                ManuallyDrop::drop(&mut self.depth_image);
+                self.device.destroy_image_view(self.depth_view, None);
+                let (image, depth_view) = create_depth_image(
+                    &self.device,
+                    self.depth_format,
+                    self.swapchain.extent,
+                    self.allocator.clone(),
+                )
+                .unwrap();
+                self.depth_image = ManuallyDrop::new(image);
+                self.depth_view = depth_view;
+                info!(
+                    "Swapchain resized to {}x{}",
+                    self.swapchain.extent.width, self.swapchain.extent.height
+                );
+                self.begin_rendering(view, projection);
+                return;
             }
+            self.device.reset_fences(&fences).unwrap();
             frame.ubo.view = *view;
             frame.ubo.projection = proj;
             self.device
@@ -252,19 +320,14 @@ impl RenderingEngine for Engine {
                 swapchain_loader: self.swapchain.loader.clone(),
                 image_index: self.swapchain.current_image_index as u32,
                 signal_fence: frame.fence,
+                sync_data: frame.sync_data.clone(),
             })
             .unwrap();
         self.frame_count += 1;
     }
 
     fn resize(&mut self, width: u32, height: u32) {
-        if self.swapchain.extent.width == width && self.swapchain.extent.height == height {
-            return;
-        }
-        unsafe {
-            self.device.device_wait_idle().unwrap();
-            todo!("Handle resizing the swapchain")
-        }
+        self.resolution = [width, height];
     }
 
     fn load_model(&mut self, path: &Path) -> Result<Arc<Mesh>, Box<dyn Error>> {
@@ -483,12 +546,25 @@ fn presentation_thread(
         unsafe {
             device
                 .queue_submit(graphics_queue, &submit_info, data.signal_fence)
-                .map_err(|e| info!("Queue submission error {e:?}"))
+                .map_err(|e| error!("Queue submission error {e:?}"))
                 .expect("Queue submit failed");
-            data.swapchain_loader
+            let suboptimal = match data
+                .swapchain_loader
                 .queue_present(presentation_queue, &present_info)
-                .map_err(|e| info!("Queue presentation error {e:?}"))
-                .expect("Queue presentation failed");
+            {
+                Ok(val) => val,
+                Err(e) if e == vk::Result::ERROR_OUT_OF_DATE_KHR => true,
+                Err(e) => panic!("Swapchain presentation error: {e}"),
+            };
+            {
+                let mut lock = data.sync_data.0.lock();
+                *lock = if suboptimal {
+                    RenderResult::OutOfDate
+                } else {
+                    RenderResult::Ok
+                };
+            }
+            data.sync_data.1.notify_one();
         }
     }
 }
