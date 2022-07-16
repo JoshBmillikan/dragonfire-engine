@@ -1,8 +1,6 @@
-use std::fs::File;
-
 use figment::providers::{Env, Format, Serialized, Toml};
 use figment::Figment;
-use log::{error, info};
+use log::error;
 use once_cell::sync::Lazy;
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};

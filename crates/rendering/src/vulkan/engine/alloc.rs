@@ -1,4 +1,3 @@
-use std::error::Error;
 use std::fmt::{Debug, Formatter};
 use std::marker::PhantomData;
 use std::ops::{Deref, DerefMut};
@@ -8,6 +7,7 @@ use ash::prelude::VkResult;
 use ash::vk;
 use ash::vk::DeviceSize;
 use vk_mem::{Allocator, AllocatorCreateInfo};
+use anyhow::Result;
 
 pub(super) fn create_allocator(
     entry: &ash::Entry,
@@ -149,7 +149,7 @@ impl<T> GpuObject<T> {
     pub fn new(
         allocator: Arc<Allocator>,
         usage: vk::BufferUsageFlags,
-    ) -> Result<Self, Box<dyn Error>> {
+    ) -> Result<Self> {
         let create_info = vk::BufferCreateInfo::builder()
             .size(std::mem::size_of::<T>() as DeviceSize)
             .sharing_mode(vk::SharingMode::EXCLUSIVE)

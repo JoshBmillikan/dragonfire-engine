@@ -24,7 +24,7 @@ pub type Material = vulkan::material::Material;
 pub type Mesh = vulkan::mesh::Mesh;
 
 pub trait RenderingEngine {
-    fn begin_rendering(&mut self, view: &Matrix4<f32>, projection: &Perspective3<f32>);
+    fn begin_rendering(&mut self, camera: &Camera);
     fn render(&mut self, mesh: &Arc<Mesh>, material: &Arc<Material>, transform: Matrix4<f32>);
     fn end_rendering(&mut self);
     fn resize(&mut self, width: u32, height: u32);

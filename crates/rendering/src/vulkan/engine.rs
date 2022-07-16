@@ -18,6 +18,7 @@ use std::path::Path;
 use std::sync::{Arc, Barrier};
 use std::thread::JoinHandle;
 use vk_mem::Allocator;
+use anyhow::Result;
 
 use engine::filesystem::DIRS;
 
@@ -27,7 +28,7 @@ use crate::vulkan::engine::pipeline::{cleanup_cache, create_pipeline};
 use crate::vulkan::engine::swapchain::Swapchain;
 use crate::vulkan::mesh::Vertex;
 use crate::vulkan::texture::Texture;
-use crate::{cull_test, Material, Mesh, RenderingEngine};
+use crate::{Camera, cull_test, Material, Mesh, RenderingEngine};
 
 pub(crate) mod alloc;
 mod init;
@@ -99,6 +100,7 @@ enum RenderResult {
 struct Ubo {
     view: Matrix4<f32>,
     projection: Matrix4<f32>,
+    orthographic: Matrix4<f32>
 }
 
 enum RenderCommand {
@@ -137,8 +139,8 @@ static COORDINATE_CORRECTION: Lazy<Matrix4<f32>> = Lazy::new(|| {
 });
 
 impl RenderingEngine for Engine {
-    fn begin_rendering(&mut self, view: &Matrix4<f32>, projection: &Perspective3<f32>) {
-        let proj = *COORDINATE_CORRECTION * projection.to_homogeneous();
+    fn begin_rendering(&mut self, camera: &Camera) {
+        let proj = *COORDINATE_CORRECTION * camera.projection.to_homogeneous();
         let frame = &mut self.frames[self.frame_count as usize % FRAMES_IN_FLIGHT];
         let fences = [frame.fence];
         unsafe {
@@ -203,12 +205,13 @@ impl RenderingEngine for Engine {
                     "Swapchain resized to {}x{}",
                     self.swapchain.extent.width, self.swapchain.extent.height
                 );
-                self.begin_rendering(view, projection);
+                self.begin_rendering(camera);
                 return;
             }
             self.device.reset_fences(&fences).unwrap();
-            frame.ubo.view = *view;
+            frame.ubo.view = camera.view.to_homogeneous();
             frame.ubo.projection = proj;
+            frame.ubo.orthographic = *COORDINATE_CORRECTION * camera.orthographic.to_homogeneous();
             self.device
                 .reset_command_pool(frame.primary_pool, vk::CommandPoolResetFlags::empty())
                 .unwrap();
@@ -241,8 +244,8 @@ impl RenderingEngine for Engine {
                 channel
                     .send(RenderCommand::Begin(
                         frame.secondary_buffers[index],
-                        *view,
-                        *projection,
+                        camera.view.to_homogeneous(),
+                        camera.projection,
                         frame.global_descriptor,
                         self.surface_format.format,
                         self.depth_format,
@@ -362,7 +365,7 @@ impl RenderingEngine for Engine {
         let cmd = [cmd];
         unsafe { self.device.free_command_buffers(self.utility_pool, &cmd) };
         info!("Loaded model {path:?}");
-        mesh
+        Ok(mesh?)
     }
 
     fn load_material(&mut self) -> Result<Arc<Material>, Box<dyn Error>> {

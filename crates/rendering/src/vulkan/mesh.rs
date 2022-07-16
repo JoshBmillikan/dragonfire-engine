@@ -8,6 +8,7 @@ use log::trace;
 use memoffset::offset_of;
 use smallvec::{smallvec, SmallVec};
 use vk_mem::Allocator;
+use anyhow::Result;
 
 use crate::vulkan::engine::alloc::Buffer;
 
@@ -49,7 +50,7 @@ impl Mesh {
         cmd: vk::CommandBuffer,
         queue: vk::Queue,
         allocator: Arc<Allocator>,
-    ) -> Result<Self, Box<dyn Error>> {
+    ) -> Result<Self> {
         let vertex_size = std::mem::size_of::<Vertex>() * vertices.len();
         let index_size = std::mem::size_of::<u32>() * indices.len();
 

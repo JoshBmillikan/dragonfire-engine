@@ -8,7 +8,8 @@ edition = "2021"
 [dependencies]
 engine = { path = "../engine" }
 rendering = { path = "../rendering" }
-winit = "0.26.1"
+winit = { version = "0.26.1", features = ["serde"] }
+ahash = { version = "0.7.6", features = ["serde", "compile-time-rng"] }
 raw-window-handle = "0.3.4"
 serde = { version = "1.0.137", features = ["derive"] }
 once_cell = "1.12.0"
@@ -20,3 +21,6 @@ uom = { version = "0.32.0", features = ["use_serde"] }
 parking_lot = "0.12.1"
 nalgebra = "0.31.0"
 toml = "0.5.9"
+anyhow = "1.0.58"
+smallvec = { version = "1.8.0", features = ["union", "serde", "const_generics", "const_new", "write"] }
+#libcef-sys = {version = "0.1.0", git = "https://github.com/JoshBmillikan/libcef-sys.git"}
