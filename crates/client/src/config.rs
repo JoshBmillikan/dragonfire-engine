@@ -20,15 +20,15 @@ impl Config {
     fn new() -> Config {
         let cfg = DIRS.project.config_dir();
         Figment::from(Serialized::defaults(Config::default()))
-            .merge(Toml::file(cfg.join("game_settings.toml")))
-            .merge(Yaml::file(cfg.join("game_settings.yaml")))
+            .merge(Toml::file(cfg.join("engine_settings.toml")))
+            .merge(Yaml::file(cfg.join("engine_settings.yaml")))
             .merge(Env::prefixed("DRAGONFIRE_"))
             .extract()
             .expect("Failed to load settings")
     }
 
     pub fn save(&self) {
-        let cfg = DIRS.project.config_dir().join("game_settings.toml");
+        let cfg = DIRS.project.config_dir().join("engine_settings.yaml");
         match serde_yaml::to_string(self) {
             Ok(str) => if let Err(e) = std::fs::write(&cfg, str) {
                 error!("Error writing config file: {e}");

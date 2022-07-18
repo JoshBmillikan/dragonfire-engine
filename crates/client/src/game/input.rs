@@ -1,15 +1,14 @@
-use std::fs::File;
-use std::io::Read;
 use ahash::AHashMap;
 use anyhow::Result;
+use engine::filesystem::DIRS;
 use log::info;
+use multimap::{MultiMap, multimap};
 use serde::{Deserialize, Serialize};
 use winit::event::{AxisId, ButtonId, DeviceEvent, DeviceId, ElementState, VirtualKeyCode};
-use engine::filesystem::DIRS;
 
 #[derive(Debug)]
 pub struct InputManager {
-    input_bindings: AHashMap<String, InputAction>,
+    input_bindings: MultiMap<String, InputBinding>,
     input_events: AHashMap<InputAction, InputValue>,
 }
 
@@ -26,18 +25,35 @@ enum InputValue {
     Button(ElementState),
 }
 
+#[derive(Debug, Serialize, Deserialize, PartialEq)]
+enum InputBinding {
+    Axis {
+        id: AxisId,
+        scale: f64,
+    },
+    Button {
+        id: ButtonId,
+        state: ElementState,
+    },
+    Key {
+        id: VirtualKeyCode,
+        state: ElementState,
+    }
+}
+
 impl InputManager {
     pub fn new() -> Result<Self> {
         let cfg = DIRS.project.config_dir();
-        let bindings = if let Ok(file) = std::fs::read_to_string(cfg.join("keybindings.toml")) {
-            toml::from_str(file.as_str())?
+        let bindings = if let Ok(file) = std::fs::read_to_string(cfg.join("keybindings.yaml")) {
+            serde_yaml::from_str(file.as_str())?
         } else {
             default_bindings()
         };
-        
+        info!("Bindings:\n{}", serde_yaml::to_string(&bindings).unwrap());
+
         Ok(InputManager {
             input_bindings: bindings,
-            input_events: Default::default()
+            input_events: Default::default(),
         })
     }
 
@@ -54,7 +70,6 @@ impl InputManager {
                     .insert(InputAction::Axis(axis), InputValue::Axis(value));
             }
             DeviceEvent::Button { button, state } => {
-                info!("Pressed {button:?}");
                 self.input_events
                     .insert(InputAction::Button(button), InputValue::Button(state));
             }
@@ -73,31 +88,12 @@ impl InputManager {
     }
 }
 
-/// Macro to conveniently write the default input mappings
-/// Based on the map lit crate, but modified for our specific use case
-macro_rules! input_map {
-    (@single $($x:tt)*) => (());
-    (@count $($rest:expr),*) => (<[()]>::len(&[$(input_map!(@single $rest)),*]));
 
-    ($($key:expr => $value:expr,)+) => { input_map!($($key => $value),+) };
-    ($($key:expr => $value:expr),*) => {
-        {
-            let _cap = input_map!(@count $($key),*);
-            let mut _map = AHashMap::with_capacity(_cap);
-            $(
-                let _ = _map.insert($key.into(), $value);
-            )*
-            _map
+fn default_bindings() -> MultiMap<String, InputBinding> {
+    multimap! {
+        "forward".into() => InputBinding::Key {
+            id: VirtualKeyCode::W,
+            state: ElementState::Pressed
         }
-    };
-}
-
-fn default_bindings() -> AHashMap<String, InputAction> {
-        input_map! {
-            "forward" => InputAction::Key(VirtualKeyCode::W),
-            "left" => InputAction::Key(VirtualKeyCode::A),
-            "right" => InputAction::Key(VirtualKeyCode::D),
-            "back" => InputAction::Key(VirtualKeyCode::S),
-            "jump" => InputAction::Key(VirtualKeyCode::Space),
-        }
+    }
 }
