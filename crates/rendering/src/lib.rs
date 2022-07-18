@@ -33,7 +33,7 @@ pub trait RenderingEngine {
     fn wait(&self);
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 pub struct GraphicsSettings {
     pub resolution: [u32; 2],
     pub fov: Angle,
