@@ -1,7 +1,7 @@
 use ahash::AHashMap;
 use anyhow::Result;
 use engine::filesystem::DIRS;
-use log::info;
+use log::{info, trace};
 use multimap::{MultiMap, multimap};
 use serde::{Deserialize, Serialize};
 use winit::event::{AxisId, ButtonId, DeviceEvent, DeviceId, ElementState, VirtualKeyCode};
@@ -49,7 +49,7 @@ impl InputManager {
         } else {
             default_bindings()
         };
-        info!("Bindings:\n{}", serde_yaml::to_string(&bindings).unwrap());
+        trace!("Bindings:\n{}", serde_yaml::to_string(&bindings).unwrap());
 
         Ok(InputManager {
             input_bindings: bindings,
