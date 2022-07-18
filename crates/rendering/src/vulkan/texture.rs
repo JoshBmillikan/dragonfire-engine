@@ -2,12 +2,12 @@ use crate::vulkan::engine::alloc::{Buffer, Image};
 use ash::vk;
 use ash::vk::DeviceSize;
 use png::Decoder;
-use std::error::Error;
 use std::fs::File;
 use std::path::Path;
 use std::sync::Arc;
 use ash::prelude::VkResult;
 use vk_mem::Allocator;
+use anyhow::Result;
 
 pub struct Texture {
     pub(super) image: Image,
@@ -24,7 +24,7 @@ impl Texture {
         queue: vk::Queue,
         anisotropy: f32,
         allocator: Arc<Allocator>,
-    ) -> Result<Self, Box<dyn Error>> {
+    ) -> Result<Self> {
         let decoder = Decoder::new(File::open(path)?);
         let mut reader = decoder.read_info()?;
         let size = reader.output_buffer_size();

@@ -16,3 +16,5 @@ smallvec = { version = "1.8.0", features = ["union", "serde", "const_generics", 
 directories = "4.0.1"
 shipyard = "0.5.0"
 wasmtime = "0.38.1"
+anyhow = "1.0.58"
+rusqlite = { version = "0.28.0", features = ["blob", "bundled"] }

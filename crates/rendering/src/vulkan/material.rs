@@ -7,10 +7,8 @@ use once_cell::sync::Lazy;
 use parking_lot::Mutex;
 
 use crate::vulkan::material::creation::load_material;
-use crate::vulkan::material::database::CONN;
 use crate::vulkan::texture::Texture;
 
-mod database;
 mod creation;
 
 pub struct Material {
@@ -37,7 +35,7 @@ impl Material {
         }
         drop(cache);
 
-        let material = CONN.with(|conn| load_material(&name, device, image_fmt, extent, conn))?;
+        let material = load_material(&name, device, image_fmt, extent, )?;
         let mut cache = CACHE.lock();
         cache.insert(name, Arc::downgrade(&material));
         Ok(material)

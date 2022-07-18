@@ -13,7 +13,10 @@ use winit::window::Window;
 use engine::ecs::{IntoIter, UniqueView, View, ViewMut, World};
 use rendering::{Camera, Material, Mesh, RenderingEngine};
 
+use crate::game::input::InputManager;
 use crate::CONFIG;
+
+pub mod input;
 
 pub struct Game<R: RenderingEngine> {
     world: World,
@@ -22,10 +25,11 @@ pub struct Game<R: RenderingEngine> {
     time: Instant,
     window: Window,
     visible: bool,
+    input_manager: InputManager,
 }
 
 impl<R: RenderingEngine> Game<R> {
-    pub fn new(mut rendering_engine: Box<R>, window: Window) -> Game<R> {
+    pub fn new(mut rendering_engine: Box<R>, window: Window) -> Self {
         let cfg = &CONFIG.read().graphics;
         let mut camera = Camera::new(cfg.resolution[0], cfg.resolution[1], cfg.fov);
         let path = PathBuf::from("./model.obj");
@@ -51,7 +55,8 @@ impl<R: RenderingEngine> Game<R> {
             rendering_engine,
             time: Instant::now(),
             window,
-            visible: true
+            visible: true,
+            input_manager: InputManager::new().expect("Failed to create input manager"),
         }
     }
 
@@ -68,26 +73,29 @@ impl<R: RenderingEngine> Game<R> {
                 window_id,
             } if self.window.id() == window_id => {
                 self.camera = Camera::new(size.width, size.height, CONFIG.read().graphics.fov);
-                self.rendering_engine
-                    .resize(size.width, size.height)
+                self.rendering_engine.resize(size.width, size.height);
             }
 
-            Event::DeviceEvent { .. } => {}
-            Event::UserEvent(_) => {}
-            Event::Suspended => {self.visible = false;}
-            Event::Resumed => {self.visible = true;}
+            Event::DeviceEvent { event, device_id } if self.visible => {
+                self.input_manager.handle_input(event, device_id);
+            }
+
+            Event::Suspended => self.visible = false,
+            Event::Resumed => self.visible = true,
 
             Event::MainEventsCleared => {
                 if self.visible {
                     let now = Instant::now();
                     let delta = Time::new::<second>((now - self.time).as_secs_f64());
                     self.tick(delta);
+                    self.input_manager.clear_events();
                     self.time = now;
                 }
             }
 
             Event::LoopDestroyed => {
                 info!("Shutting down");
+                self.visible = false;
                 self.rendering_engine.wait();
                 self.world.clear();
             }
@@ -99,8 +107,7 @@ impl<R: RenderingEngine> Game<R> {
         self.world.add_unique(delta).unwrap();
         self.world.run(rotate).unwrap();
 
-        self.rendering_engine
-            .begin_rendering(&self.camera.view.to_homogeneous(), &self.camera.projection);
+        self.rendering_engine.begin_rendering(&self.camera);
 
         self.world
             .run(

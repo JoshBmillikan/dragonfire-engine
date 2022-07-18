@@ -1,4 +1,4 @@
-use std::error::Error;
+use anyhow::{anyhow, Result};
 use std::ffi::{CStr, CString};
 use std::mem::ManuallyDrop;
 use std::num::NonZeroUsize;
@@ -18,7 +18,10 @@ use vk_mem::Allocator;
 
 use crate::vulkan::engine::alloc::{create_allocator, GpuObject, Image};
 use crate::vulkan::engine::swapchain::Swapchain;
-use crate::vulkan::engine::{debug_callback, presentation_thread, render_thread, Engine, Frame, PresentData, Ubo, FRAMES_IN_FLIGHT, RenderResult};
+use crate::vulkan::engine::{
+    debug_callback, presentation_thread, render_thread, Engine, Frame, PresentData, RenderResult,
+    Ubo, FRAMES_IN_FLIGHT,
+};
 use crate::GraphicsSettings;
 
 impl Engine {
@@ -28,7 +31,7 @@ impl Engine {
     pub unsafe fn new(
         window: &dyn HasRawWindowHandle,
         settings: &GraphicsSettings,
-    ) -> Result<Self, Box<dyn Error>> {
+    ) -> Result<Self> {
         let entry = load()?;
         let instance = create_instance(&entry, window)?;
 
@@ -86,7 +89,7 @@ impl Engine {
                     descriptor_pool,
                 )
             })
-            .collect::<Result<SmallVec<[_; FRAMES_IN_FLIGHT]>, Box<dyn Error>>>()?;
+            .collect::<Result<SmallVec<[_; FRAMES_IN_FLIGHT]>>>()?;
 
         let render_barrier = Arc::new(Barrier::new(thread_count + 1));
         let (render_channels, render_thread_handles) = (0..thread_count)
@@ -155,7 +158,7 @@ fn create_present_thread(
     device: Arc<Device>,
     graphics_queue: vk::Queue,
     presentation_queue: vk::Queue,
-) -> Result<(Sender<PresentData>, std::thread::JoinHandle<()>), Box<dyn Error>> {
+) -> Result<(Sender<PresentData>, std::thread::JoinHandle<()>)> {
     let (sender, receiver) = crossbeam_channel::bounded(0);
     Ok((
         sender,
@@ -180,7 +183,7 @@ impl Swapchain {
         vsync: bool,
         resolution: &[u32; 2],
         old: Option<&Swapchain>,
-    ) -> Result<Self, Box<dyn Error>> {
+    ) -> Result<Self> {
         let loader = Arc::new(ash::extensions::khr::Swapchain::new(instance, &device));
         let capabilities =
             surface_loader.get_physical_device_surface_capabilities(physical_device, surface)?;
@@ -248,7 +251,7 @@ impl Swapchain {
 }
 
 /// Loads the vulkan entry functions
-unsafe fn load() -> Result<Box<ash::Entry>, Box<dyn Error>> {
+unsafe fn load() -> Result<Box<ash::Entry>> {
     let entry = Box::new(ash::Entry::load()?);
     if let Some(version) = entry.try_enumerate_instance_version()? {
         info!(
@@ -268,7 +271,7 @@ unsafe fn load() -> Result<Box<ash::Entry>, Box<dyn Error>> {
 unsafe fn create_instance(
     entry: &ash::Entry,
     window: &dyn HasRawWindowHandle,
-) -> Result<Box<ash::Instance>, Box<dyn Error>> {
+) -> Result<Box<ash::Instance>> {
     let version_str = env!("CARGO_PKG_VERSION").split('.').collect::<Vec<_>>();
     let version = vk::make_api_version(
         0,
@@ -325,7 +328,7 @@ unsafe fn get_physical_device(
     surface: vk::SurfaceKHR,
     surface_loader: &ash::extensions::khr::Surface,
     extensions: &[&CStr],
-) -> Result<vk::PhysicalDevice, Box<dyn Error>> {
+) -> Result<vk::PhysicalDevice> {
     let devices = read_into_uninitialized_small_vector(|count, data| {
         (instance.fp_v1_0().enumerate_physical_devices)(instance.handle(), count, data)
     })?;
@@ -367,7 +370,7 @@ unsafe fn get_physical_device(
             instance.get_physical_device_properties(*device).device_type
                 == PhysicalDeviceType::DISCRETE_GPU
         })
-        .ok_or("No valid gpu available")?;
+        .ok_or(anyhow!("No valid gpu available"))?;
     let props = instance.get_physical_device_properties(device);
     if props.device_type != PhysicalDeviceType::DISCRETE_GPU {
         warn!("No discrete gpu found, falling back to integrated gpu");
@@ -420,7 +423,7 @@ unsafe fn get_queue_families(
     physical_device: vk::PhysicalDevice,
     surface: vk::SurfaceKHR,
     surface_loader: &ash::extensions::khr::Surface,
-) -> Result<[u32; 2], Box<dyn Error>> {
+) -> Result<[u32; 2]> {
     let mut graphics = None;
     let mut present = None;
     let props = read_into_uninitialized_small_vector(|count, data| {
@@ -447,8 +450,8 @@ unsafe fn get_queue_families(
         }
     }
     Ok([
-        graphics.ok_or("Failed to find graphics queue")?,
-        present.ok_or("Failed to find presentation queue")?,
+        graphics.ok_or(anyhow!("Failed to find graphics queue"))?,
+        present.ok_or(anyhow!("Failed to find presentation queue"))?,
     ])
 }
 
@@ -458,7 +461,7 @@ unsafe fn create_device(
     physical_device: vk::PhysicalDevice,
     extensions: &[&CStr],
     queue_families: &[u32],
-) -> VkResult<Arc<ash::Device>> {
+) -> VkResult<Arc<Device>> {
     let extensions = extensions
         .iter()
         .inspect(|ext| info!("Loaded device extension {ext:?}"))
@@ -499,7 +502,7 @@ unsafe fn get_surface_format(
     physical_device: vk::PhysicalDevice,
     surface: vk::SurfaceKHR,
     surface_loader: &ash::extensions::khr::Surface,
-) -> Result<vk::SurfaceFormatKHR, Box<dyn Error>> {
+) -> Result<vk::SurfaceFormatKHR> {
     Ok(surface_loader
         .get_physical_device_surface_formats(physical_device, surface)?
         .into_iter()
@@ -507,7 +510,7 @@ unsafe fn get_surface_format(
             fmt.format == vk::Format::B8G8R8_SRGB
                 && fmt.color_space == vk::ColorSpaceKHR::SRGB_NONLINEAR
         })
-        .ok_or("Failed to find valid surface format")?)
+        .ok_or(anyhow!("Failed to find valid surface format"))?)
 }
 
 /// Gets the presentation mode for the surface
@@ -573,7 +576,7 @@ unsafe fn create_frame(
     allocator: &Arc<Allocator>,
     global_descriptor_layout: vk::DescriptorSetLayout,
     descriptor_pool: vk::DescriptorPool,
-) -> Result<Frame, Box<dyn Error>> {
+) -> Result<Frame> {
     let create_info = vk::CommandPoolCreateInfo::builder().queue_family_index(graphics_index);
     let primary_pool = device.create_command_pool(&create_info, None)?;
     let alloc_info = vk::CommandBufferAllocateInfo::builder()
@@ -679,7 +682,7 @@ unsafe fn get_depth_format(
     physical_device: vk::PhysicalDevice,
     instance: &ash::Instance,
     tiling: vk::ImageTiling,
-) -> Result<vk::Format, Box<dyn Error>> {
+) -> Result<vk::Format> {
     let possible_formats = [
         vk::Format::D32_SFLOAT,
         vk::Format::D32_SFLOAT_S8_UINT,
@@ -700,7 +703,7 @@ unsafe fn get_depth_format(
             }
         })
         .cloned()
-        .ok_or_else(|| "Failed to find a valid depth image format".into())
+        .ok_or_else(|| anyhow!("Failed to find a valid depth image format"))
 }
 
 pub(super) unsafe fn create_depth_image(
@@ -708,7 +711,7 @@ pub(super) unsafe fn create_depth_image(
     format: vk::Format,
     extent: vk::Extent2D,
     allocator: Arc<Allocator>,
-) -> Result<(Image, vk::ImageView), Box<dyn Error>> {
+) -> Result<(Image, vk::ImageView)> {
     let create_info = vk::ImageCreateInfo::builder()
         .format(format)
         .image_type(vk::ImageType::TYPE_2D)
@@ -749,13 +752,10 @@ pub(super) unsafe fn create_depth_image(
 unsafe fn create_debug_messenger(
     entry: &ash::Entry,
     instance: &ash::Instance,
-) -> Result<
-    (
-        Box<ash::extensions::ext::DebugUtils>,
-        vk::DebugUtilsMessengerEXT,
-    ),
-    Box<dyn Error>,
-> {
+) -> Result<(
+    Box<ash::extensions::ext::DebugUtils>,
+    vk::DebugUtilsMessengerEXT,
+)> {
     let utils = ash::extensions::ext::DebugUtils::new(entry, instance);
     let create_info = get_debug_info();
     let messenger = utils.create_debug_utils_messenger(&create_info, None)?;
